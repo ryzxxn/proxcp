@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Key, Plus, Copy, Trash2, Eye, Calendar, Clock, Loader2, Check, Wrench, X, ChevronRight, Activity, Minus, Box, Search, Filter } from 'lucide-react';
+import { Key, Plus, Copy, Trash2, Eye, Calendar, Clock, Loader2, Check, Wrench, X, ChevronRight, Activity, Minus, Box, Search, Filter, Power } from 'lucide-react';
 import { useSession } from '@/lib/auth-client';
 import { api } from '@/lib/api';
 import { toast } from 'sonner';
@@ -137,6 +137,17 @@ export default function AccessControlPage() {
     }
   };
 
+  const handleToggleStatus = async (keyId: string, currentStatus: boolean) => {
+    if (!session?.user?.id) return;
+    try {
+      await api.toggleApiKey(session.user.id, keyId, !currentStatus);
+      fetchKeys();
+      toast.success(`Access key ${!currentStatus ? 'activated' : 'deactivated'}`);
+    } catch (error) {
+      toast.error('Toggle failed: ' + (error as any).message);
+    }
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
     setCopiedKey(text);
@@ -210,6 +221,18 @@ export default function AccessControlPage() {
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-2.5">
+                <button 
+                  onClick={() => handleToggleStatus(key.id, key.is_active)}
+                  className={`flex items-center justify-center gap-2.5 px-4 py-3 rounded-xl text-[9px] font-bold uppercase tracking-widest transition-all italic border ${
+                    key.is_active 
+                      ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500 hover:bg-emerald-500/20' 
+                      : 'bg-red-500/10 border-red-500/20 text-red-500 hover:bg-red-500/20'
+                  }`}
+                  title={key.is_active ? 'Deactivate Key' : 'Activate Key'}
+                >
+                  <Power className="w-3.5 h-3.5" />
+                  {key.is_active ? 'Status::Active' : 'Status::Disabled'}
+                </button>
                 <button 
                   onClick={() => {
                     setSelectedKey(key);

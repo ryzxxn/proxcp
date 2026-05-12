@@ -10,6 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 import asyncio
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
+from sqlalchemy import select # <-- ADDED
 import os
 from dotenv import load_dotenv # type: ignore
 
@@ -18,7 +19,7 @@ from fastmcp import Client
 from fastmcp.client.auth import BearerAuth
 
 # --- Import from new utility files ---
-from app.utils.database import get_db, Tool, ToolConfigMapping
+from app.utils.database import get_db, Tool, ToolConfigMapping, ApiKey # <-- ADDED ApiKey
 from app.utils.network import rewrite_docker_url
 from app.utils.connections import connection_manager
 # Using the path from your provided file
@@ -70,7 +71,11 @@ class JSONRPCResponse(JSONRPCBase):
     error: Optional[Dict[str, Any]] = None
 
 # Dependency to validate token and extract username and tool config id
-async def get_auth_info_from_token(authorization: Optional[str] = Header(None), token: Optional[str] = Query(None)):
+async def get_auth_info_from_token(
+    authorization: Optional[str] = Header(None), 
+    token: Optional[str] = Query(None),
+    db: Session = Depends(get_db) # <-- ADDED
+):
     if DISABLE_AUTH:
         return "user123", None
 
@@ -91,9 +96,29 @@ async def get_auth_info_from_token(authorization: Optional[str] = Header(None), 
         payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
         name = payload.get("user_id")
         tool_config_id: Optional[str] = payload.get("tool_config_id")
+        
         if name is None:
             logger.error("user_id not found in JWT payload")
             raise HTTPException(status_code=401, detail="Invalid token")
+
+        # --- VALIDATION: Check if API key is active ---
+        if tool_config_id:
+            logger.debug(f"Validating API key status for tool_config_id: {tool_config_id}")
+            query = select(ApiKey).where(ApiKey.tool_config_id == tool_config_id)
+            result = db.execute(query)
+            api_key = result.scalar_one_or_none()
+            
+            if not api_key:
+                logger.error(f"API key record not found in DB for tool_config_id: {tool_config_id}")
+                raise HTTPException(status_code=401, detail="API key record not found")
+                
+            if not api_key.is_active:
+                logger.warning(f"Rejected request from deactivated API key: {tool_config_id} (User: {name})")
+                raise HTTPException(status_code=403, detail="API key is deactivated")
+            
+            logger.debug(f"API key {tool_config_id} is active and valid.")
+        # -----------------------------------------------
+
         logger.debug(f"Extracted user_id: {name}, tool_config_id: {tool_config_id}")
         return name, tool_config_id
     except JWTError as e:
@@ -112,7 +137,7 @@ async def sse_endpoint(
         tool_config_id = None
         logger.debug(f"Authentication disabled, using hardcoded user_id={username}")
     else:
-        username, tool_config_id = await get_auth_info_from_token(authorization, token)
+        username, tool_config_id = await get_auth_info_from_token(authorization, token, db)
         logger.debug(f"Authentication enabled, user_id: {username}")
 
     session_id = str(uuid.uuid4()).replace('-', '')
@@ -126,7 +151,8 @@ async def sse_endpoint(
         server_name="proxcp-server",
         method="sse/connect",
         params={"tool_config_id": tool_config_id},
-        status="accepted"
+        status="accepted",
+        tool_config_id=tool_config_id # <-- ADDED
     )
 
     queue = asyncio.Queue()
@@ -190,7 +216,8 @@ async def sse_endpoint(
                     status="accepted",
                     latency_seconds=duration,
                     start_timestamp=sse_start_dt,
-                    end_timestamp=datetime.datetime.utcnow()
+                    end_timestamp=datetime.datetime.utcnow(),
+                    tool_config_id=tool_config_id # <-- ADDED
                 )
 
     logger.debug(f"[{session_id}] Starting SSE response task")
@@ -252,7 +279,7 @@ async def handle_messages(
         else:
             notification = JSONRPCNotification(**body)
             logger.debug(f"[{session_id}] Validated client message: root={notification}")
-            await handle_notification(notification, session_id, username, db)
+            await handle_notification(notification, session_id, username, tool_config_id, db)
     except ValidationError as e:
         logger.error(f"[{session_id}] JSON-RPC validation error: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid JSON-RPC message: {e}")
@@ -487,7 +514,8 @@ async def handle_request(request: JSONRPCRequest, session_id: Optional[str], use
         tool_name=tool_name_to_log,
         latency_seconds=latency_sec,
         start_timestamp=start_dt,
-        end_timestamp=end_dt
+        end_timestamp=end_dt,
+        tool_config_id=tool_config_id # <-- ADDED
     )
 
     logger.debug(f"[{session_id}] Response sent: {final_response_dict}")
@@ -495,7 +523,7 @@ async def handle_request(request: JSONRPCRequest, session_id: Optional[str], use
     # --- End Logging ---
 
 # Handle JSON-RPC notifications (Unchanged)
-async def handle_notification(notification: JSONRPCNotification, session_id: Optional[str], username: str, db: Session):
+async def handle_notification(notification: JSONRPCNotification, session_id: Optional[str], username: str, tool_config_id: Optional[str], db: Session):
     logger.debug(f"[{session_id or 'stateless'}] Received notification: {notification.method} by user: {username}")
     
     start_time = time.perf_counter()
@@ -526,5 +554,6 @@ async def handle_notification(notification: JSONRPCNotification, session_id: Opt
         tool_name=None,
         latency_seconds=latency_sec,
         start_timestamp=start_dt,
-        end_timestamp=end_dt
+        end_timestamp=end_dt,
+        tool_config_id=tool_config_id # <-- ADDED
     )

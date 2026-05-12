@@ -37,6 +37,7 @@ class TransactionResponse(BaseModel):
     
     status: str
     tool_name: Optional[str] = None
+    tool_config_id: Optional[str] = None # <-- ADDED
     timestamp: datetime.datetime
     
     # --- UPDATED: New time tracking fields ---
@@ -103,6 +104,7 @@ def _group_transactions_by_session(results: List[Transaction]) -> Dict[str, Sess
             status=tx.status,
             response_data=response_dict,
             tool_name=tx.tool_name,
+            tool_config_id=tx.tool_config_id, # <-- ADDED
             timestamp=tx.timestamp,
             start_timestamp=getattr(tx, 'start_timestamp', None),
             end_timestamp=getattr(tx, 'end_timestamp', None),
@@ -161,6 +163,7 @@ def _group_transactions_by_tool(results: List[Transaction]) -> Dict[str, List[Tr
             status=tx.status,
             response_data=response_dict,
             tool_name=tx.tool_name,
+            tool_config_id=tx.tool_config_id, # <-- ADDED
             timestamp=tx.timestamp,
             start_timestamp=getattr(tx, 'start_timestamp', None),
             end_timestamp=getattr(tx, 'end_timestamp', None),
@@ -207,6 +210,7 @@ def _parse_transactions_list(results: List[Transaction]) -> List[TransactionResp
             status=tx.status,
             response_data=response_dict,
             tool_name=tx.tool_name,
+            tool_config_id=tx.tool_config_id, # <-- ADDED
             timestamp=tx.timestamp,
             start_timestamp=getattr(tx, 'start_timestamp', None),
             end_timestamp=getattr(tx, 'end_timestamp', None),

@@ -49,6 +49,9 @@ export const api = {
   syncAllToolsToApiKey: (userId: string, toolConfigId: string) =>
     apiClient.post(`/api_key/${toolConfigId}/sync`, {}, { params: { user_id: userId } }).then(res => res.data),
 
+  toggleApiKey: (userId: string, keyId: string, active: boolean) =>
+    apiClient.post(`/api_key/${keyId}/activate`, { active }, { params: { user_id: userId } }).then(res => res.data),
+
   getTransactions: (userId: string) => 
     apiClient.get('/transactions', { params: { user_id: userId } }).then(res => res.data),
   

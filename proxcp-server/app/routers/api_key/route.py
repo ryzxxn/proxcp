@@ -31,6 +31,7 @@ class ApiKeyResponse(BaseModel):
     tool_config_id: str
     key: str
     created_at: datetime.datetime
+    is_active: bool # <-- UPDATED
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -123,6 +124,29 @@ def delete_api_key(
     # ------------------------
     
     return {"message": "API key deleted successfully"}
+
+@router.post("/api_key/{key_id}/activate", response_model=ApiKeyResponse)
+def toggle_api_key_status(
+    key_id: uuid.UUID,
+    active: bool = Body(..., embed=True),
+    user_id: str = Query(..., description="The ID of the user"),
+    db: Session = Depends(get_db)
+):
+    """
+    Enables or disables a specific API key.
+    """
+    query = select(ApiKey).where(ApiKey.id == key_id, ApiKey.user_id == user_id)
+    api_key = db.execute(query).scalar_one_or_none()
+    
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+        
+    api_key.is_active = active
+    db.commit()
+    db.refresh(api_key)
+    
+    logger.info(f"API key {key_id} {'activated' if active else 'deactivated'} for user {user_id}")
+    return api_key
 
 # --- Tool Config Mapping Routes ---
 

@@ -20,6 +20,7 @@ def log_transaction(
     status: str = "accepted",
     response_data: Optional[Dict[str, Any]] = None,
     tool_name: Optional[str] = None,
+    tool_config_id: Optional[str] = None, # <-- ADDED
     latency_seconds: Optional[float] = None,
     start_timestamp: Optional[datetime.datetime] = None,
     end_timestamp: Optional[datetime.datetime] = None
@@ -56,6 +57,7 @@ def log_transaction(
             status=status,
             response_data=response_str,
             tool_name=tool_name,
+            tool_config_id=tool_config_id, # <-- ADDED
             latency_seconds=latency_seconds,
             start_timestamp=start_timestamp or datetime.datetime.utcnow(),
             end_timestamp=end_timestamp or (datetime.datetime.utcnow() if latency_seconds else None)

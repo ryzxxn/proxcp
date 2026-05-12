@@ -92,6 +92,7 @@ class Transaction(Base):
     status = Column(String, nullable=False)
     response_data = Column(Text, nullable=True)
     tool_name = Column(String, index=True, nullable=True)
+    tool_config_id = Column(String, index=True, nullable=True) # <-- ADDED: Link to API Key
     
     # --- UPDATED: Enhanced time tracking ---
     timestamp = Column(DateTime, default=datetime.datetime.utcnow) # Still here for compatibility
@@ -113,6 +114,7 @@ class ApiKey(Base):
     tool_config_id = Column(String, index=True, nullable=False)
     key = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    is_active = Column(Boolean, default=True, nullable=False) # <-- UPDATED
 
 class ToolConfigMapping(Base):
     """
@@ -211,6 +213,23 @@ def create_db_and_tables():
                     conn.execute(text(f"ALTER TABLE transactions ADD COLUMN latency_seconds {col_type}"))
                 except Exception as e:
                     logger.warning(f"Could not add latency_seconds: {e}")
+            
+            # Add tool_config_id to transactions if missing
+            if "tool_config_id" not in columns:
+                logger.info("Adding 'tool_config_id' column to 'transactions' table...")
+                try:
+                    conn.execute(text("ALTER TABLE transactions ADD COLUMN tool_config_id VARCHAR"))
+                except Exception as e:
+                    logger.warning(f"Could not add tool_config_id: {e}")
+
+            # Add is_active to api_keys if missing
+            key_columns = [c["name"] for c in inspector.get_columns("api_keys")]
+            if "is_active" not in key_columns:
+                logger.info("Adding 'is_active' column to 'api_keys' table...")
+                try:
+                    conn.execute(text("ALTER TABLE api_keys ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
+                except Exception as e:
+                    logger.warning(f"Could not add is_active: {e}")
             
             # Commit changes (SQLAlchemy 2.0 style)
             conn.commit()

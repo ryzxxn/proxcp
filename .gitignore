@@ -143,3 +143,5 @@ vite.config.ts.timestamp-*
 .vite/
 proxcp-server/data/proxcp.db
 proxcp-client/auth.db
+.pyc*
+*.pyc
