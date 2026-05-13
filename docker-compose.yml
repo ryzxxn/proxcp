@@ -1,0 +1,27 @@
+services:
+  server:
+    build:
+      context: ./proxcp-server
+    ports:
+      - "8000:8000"
+    volumes:
+      - proxcp_data:/app/data
+    env_file:
+      - ./proxcp-server/.env
+    restart: always
+
+  client:
+    build:
+      context: ./proxcp-client
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:8000
+    ports:
+      - "3005:3005"
+    env_file:
+      - ./proxcp-client/.env
+    depends_on:
+      - server
+    restart: always
+
+volumes:
+  proxcp_data:
