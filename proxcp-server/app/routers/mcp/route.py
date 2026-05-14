@@ -71,6 +71,57 @@ class JSONRPCResponse(JSONRPCBase):
     result: Optional[Any] = None
     error: Optional[Dict[str, Any]] = None
 
+# --- PROTOCOL CONSTANTS ---
+PROTOCOL_RESOURCES = [
+    {
+        "uri": "file://protocol/rules",
+        "name": "get_rules",
+        "description": "PROXCP Protocol Rules",
+        "mimeType": "text/markdown"
+    }
+]
+
+PROTOCOL_TEMPLATES = [
+    {
+        "name": "get_weather",
+        "uriTemplate": "weather://{city}/current",
+        "description": "Provides mock weather information for a specific city.",
+        "mimeType": "text/plain"
+    },
+    {
+        "name": "get_path_content",
+        "uriTemplate": "path://{filepath*}",
+        "description": "Echoes back the path requested via wildcard.",
+        "mimeType": "text/plain"
+    },
+    {
+        "name": "search_resources",
+        "uriTemplate": "api://search{?query,limit}",
+        "description": "Simulates a searchable resource index with query parameters.",
+        "mimeType": "text/plain"
+    }
+]
+
+PROTOCOL_RULES_CONTENT = """# PROXCP PROTOCOL RULES
+
+1. SYSTEM INTEGRITY
+   - All connections must be via SSE or STDIO transport.
+   - API Keys (pxp-*) must be kept confidential.
+
+2. RESOURCE ACCESS
+   - Dynamic resources are lazy-loaded on demand.
+   - Resource templates require valid URI parameter replacement.
+
+3. LLM INTERACTION
+   - Use TOON format for optimized token consumption.
+   - Prompts must be used for structured conversation initialization.
+
+4. EMERGENCY PROTOCOLS
+   - In case of sync failure, trigger full server refresh.
+   - Transaction logs are the source of truth for audit trails.
+"""
+# ---------------------------
+
 # Dependency to validate token and extract username and tool config id
 async def get_auth_info_from_token(
     authorization: Optional[str] = Header(None), 
@@ -368,7 +419,7 @@ async def handle_request(
             from app.utils.cache import tool_cache
             cached_resources = tool_cache.get_resources(username, tool_config_id)
             
-            static_resources = []
+            static_resources = PROTOCOL_RESOURCES.copy()
             if session_id and session_id in sessions:
                 resource_map = sessions[session_id].get("resource_map", {})
                 resource_map.clear()
@@ -395,7 +446,7 @@ async def handle_request(
             from app.utils.cache import tool_cache
             cached_resources = tool_cache.get_resources(username, tool_config_id)
             
-            templates = []
+            templates = PROTOCOL_TEMPLATES.copy()
             if session_id and session_id in sessions:
                 resource_map = sessions[session_id].get("resource_map", {})
             else:
@@ -421,6 +472,48 @@ async def handle_request(
             uri = params.get("uri")
             if not uri:
                 response.error = {"code": -32602, "message": "URI is required"}
+            elif uri == "file://protocol/rules":
+                response.result = {
+                    "contents": [
+                        {
+                            "uri": uri,
+                            "mimeType": "text/markdown",
+                            "text": PROTOCOL_RULES_CONTENT
+                        }
+                    ]
+                }
+            elif uri.startswith("weather://"):
+                city = uri.split("/")[-2] if uri.endswith("/current") else "Unknown"
+                response.result = {
+                    "contents": [
+                        {
+                            "uri": uri,
+                            "mimeType": "text/plain",
+                            "text": f"Mock weather for {city}: Sunny, 72°F"
+                        }
+                    ]
+                }
+            elif uri.startswith("path://"):
+                path = uri.replace("path://", "")
+                response.result = {
+                    "contents": [
+                        {
+                            "uri": uri,
+                            "mimeType": "text/plain",
+                            "text": f"Echo: {path}"
+                        }
+                    ]
+                }
+            elif uri.startswith("api://search"):
+                response.result = {
+                    "contents": [
+                        {
+                            "uri": uri,
+                            "mimeType": "text/plain",
+                            "text": f"Search results for query at {uri}"
+                        }
+                    ]
+                }
             else:
                 target = None
                 if session_id and session_id in sessions:
@@ -443,7 +536,17 @@ async def handle_request(
                 else:
                     client = await connection_manager.get_client(target["url"], target.get("token"))
                     res = await client.read_resource(uri)
-                    response.result = res.model_dump() if hasattr(res, "model_dump") else res
+                    
+                    if isinstance(res, list):
+                        response.result = {"contents": res}
+                    elif hasattr(res, "model_dump"):
+                        response.result = res.model_dump()
+                    else:
+                        response.result = res
+            
+            # Apply TOON if requested (works for both built-ins and dynamic resources)
+            if is_toon and response.result and "contents" in response.result:
+                response.result["toon"] = to_toon(response.result["contents"])
 
         elif request.method == "prompts/list":
             logger.debug(f"[{session_id or 'stateless'}] Fetching prompts for user: {username}")
@@ -498,7 +601,14 @@ async def handle_request(
                 else:
                     client = await connection_manager.get_client(target["url"], target.get("token"))
                     res = await client.get_prompt(name, args)
-                    response.result = res.model_dump() if hasattr(res, "model_dump") else res
+                    
+                    if hasattr(res, "model_dump"):
+                        response.result = res.model_dump()
+                    else:
+                        response.result = res
+                        
+                    if is_toon and response.result:
+                        response.result["toon"] = to_toon(response.result)
         
         elif request.method == "tools/list":
             logger.debug(f"[{session_id or 'stateless'}] Fetching tools for user: {username}, config: {tool_config_id}")
