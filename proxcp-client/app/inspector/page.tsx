@@ -183,7 +183,7 @@ export default function InspectorPage() {
       // Find all {blocks}
       const matches = selectedResource.uri.match(/\{([^}]+)\}/g);
       if (matches) {
-        matches.forEach(block => {
+        matches.forEach((block: string) => {
           const content = block.slice(1, -1);
           const isQuery = content.startsWith('?');
           const isContinuation = content.startsWith('&');
