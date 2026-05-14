@@ -15,8 +15,20 @@ import {
   Terminal,
   Code,
   Clock,
-  Box
+  Box,
+  BarChart3
 } from 'lucide-react';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area
+} from 'recharts';
 import Link from 'next/link';
 import { useSession } from '@/lib/auth-client';
 import { api } from '@/lib/api';
@@ -90,21 +102,83 @@ export default function Dashboard() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5 lg:gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-5">
         {[
           { label: 'Network Nodes', value: stats.servers, icon: Server },
           { label: 'Active Tools', value: stats.tools, icon: Wrench },
           { label: 'Access Control', value: stats.apiKeys, icon: Key },
           { label: 'Data Requests', value: stats.requests, icon: Zap },
         ].map((stat, i) => (
-          <div key={i} className="bg-zinc-950 p-5 md:p-6 lg:p-7 rounded-[20px] md:rounded-[24px] border border-zinc-900 shadow-sm hover:border-zinc-700 transition-all group">
-            <div className={`w-9 h-9 md:w-10 md:h-10 rounded-lg md:rounded-xl flex items-center justify-center mb-3 md:mb-4 bg-zinc-900 text-zinc-500 group-hover:bg-white group-hover:text-black transition-all`}>
-              <stat.icon className="w-4.5 h-4.5 md:w-5 md:h-5" />
+          <div key={i} className="bg-zinc-950 p-4 md:p-5 rounded-2xl border border-zinc-900 shadow-sm hover:border-zinc-700 transition-all group">
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center mb-3 bg-zinc-900 text-zinc-500 group-hover:bg-white group-hover:text-black transition-all`}>
+              <stat.icon className="w-4 h-4" />
             </div>
-            <div className="text-[8px] md:text-[9px] font-bold text-zinc-600 uppercase tracking-widest">{stat.label}</div>
-            <div className="text-2xl md:text-3xl lg:text-4xl font-bold text-white mt-1.5 italic">{stat.value}</div>
+            <div className="text-[7px] md:text-[8px] font-bold text-zinc-600 uppercase tracking-widest">{stat.label}</div>
+            <div className="text-xl md:text-2xl font-bold text-white mt-1 italic">{stat.value}</div>
           </div>
         ))}
+      </div>
+
+      {/* Latency Graph */}
+      <div className="bg-zinc-950 p-6 md:p-8 rounded-[24px] border border-zinc-900">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h2 className="text-lg md:text-xl font-bold uppercase tracking-tight italic flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-zinc-500" />
+              Transaction Latency
+            </h2>
+            <p className="text-zinc-500 text-[10px] uppercase tracking-widest font-bold mt-1">Real-time performance metrics (ms)</p>
+          </div>
+        </div>
+        <div className="h-[300px] w-full">
+          <ResponsiveContainer width="100%" height="100%">
+            <AreaChart
+              data={transactions.slice().reverse().map(tx => ({
+                name: tx.tool_name || tx.jsonrpc_method,
+                latency: (tx.latency_seconds || 0) * 1000,
+                time: new Date(tx.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+              }))}
+              margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+            >
+              <defs>
+                <linearGradient id="colorLatency" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#ffffff" stopOpacity={0.3}/>
+                  <stop offset="95%" stopColor="#ffffff" stopOpacity={0}/>
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#18181b" vertical={false} />
+              <XAxis 
+                dataKey="time" 
+                stroke="#52525b" 
+                fontSize={10} 
+                tickLine={false} 
+                axisLine={false}
+                minTickGap={30}
+              />
+              <YAxis 
+                stroke="#52525b" 
+                fontSize={10} 
+                tickLine={false} 
+                axisLine={false}
+                tickFormatter={(value) => `${value}ms`}
+              />
+              <Tooltip 
+                contentStyle={{ backgroundColor: '#09090b', border: '1px solid #27272a', borderRadius: '8px' }}
+                itemStyle={{ color: '#ffffff', fontSize: '12px' }}
+                labelStyle={{ color: '#71717a', fontSize: '10px', marginBottom: '4px' }}
+              />
+              <Area 
+                type="monotone" 
+                dataKey="latency" 
+                stroke="#ffffff" 
+                strokeWidth={2}
+                fillOpacity={1} 
+                fill="url(#colorLatency)" 
+                animationDuration={1500}
+              />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       <div className="grid lg:grid-cols-3 gap-10">

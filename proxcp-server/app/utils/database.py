@@ -54,10 +54,44 @@ class Tool(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4) # <-- UPDATED
     user_id = Column(String, index=True, nullable=False)
     name = Column(String, index=True, nullable=False)
+    custom_name = Column(String, nullable=True) # <-- ADDED
+    custom_description = Column(Text, nullable=True) # <-- ADDED
     definition = Column(Text, nullable=True)
     server_url = Column(String, index=True, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False, index=True)
     server_token = Column(String, nullable=True)
+
+
+class Resource(Base):
+    """
+    Model for storing a resource definition associated with a user.
+    """
+    __tablename__ = "resources"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(String, index=True, nullable=False)
+    uri = Column(String, index=True, nullable=False) # Stores URI or URI Template
+    name = Column(String, nullable=True)
+    description = Column(Text, nullable=True)
+    mime_type = Column(String, nullable=True)
+    server_url = Column(String, index=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
+    is_template = Column(Boolean, default=False, nullable=False) # <-- ADDED
+
+
+class Prompt(Base):
+    """
+    Model for storing a prompt definition associated with a user.
+    """
+    __tablename__ = "prompts"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(String, index=True, nullable=False)
+    name = Column(String, index=True, nullable=False)
+    description = Column(Text, nullable=True)
+    arguments = Column(Text, nullable=True) # Store arguments as JSON string
+    server_url = Column(String, index=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
 
 
 class UserServerConfig(Base):
@@ -153,7 +187,7 @@ def check_schema():
         from sqlalchemy import inspect
         inspector = inspect(engine)
         tables = inspector.get_table_names()
-        expected_tables = ["tools", "user_server_configs", "transactions", "api_keys", "tool_config_mappings"]
+        expected_tables = ["tools", "user_server_configs", "transactions", "api_keys", "tool_config_mappings", "resources", "prompts"]
         
         missing_tables = [t for t in expected_tables if t not in tables]
         
@@ -185,6 +219,7 @@ def create_db_and_tables():
         # 2. Simple Column Migrations (for SQLite/Postgres)
         from sqlalchemy import inspect, text
         inspector = inspect(engine)
+        tables = inspector.get_table_names()
         columns = [c["name"] for c in inspector.get_columns("transactions")]
         
         with engine.connect() as conn:
@@ -230,6 +265,32 @@ def create_db_and_tables():
                     conn.execute(text("ALTER TABLE api_keys ADD COLUMN is_active BOOLEAN DEFAULT TRUE"))
                 except Exception as e:
                     logger.warning(f"Could not add is_active: {e}")
+            
+            # Add custom_name and custom_description to tools if missing
+            tool_columns = [c["name"] for c in inspector.get_columns("tools")]
+            if "custom_name" not in tool_columns:
+                logger.info("Adding 'custom_name' column to 'tools' table...")
+                try:
+                    conn.execute(text("ALTER TABLE tools ADD COLUMN custom_name VARCHAR"))
+                except Exception as e:
+                    logger.warning(f"Could not add custom_name: {e}")
+            
+            if "custom_description" not in tool_columns:
+                logger.info("Adding 'custom_description' column to 'tools' table...")
+                try:
+                    conn.execute(text("ALTER TABLE tools ADD COLUMN custom_description TEXT"))
+                except Exception as e:
+                    logger.warning(f"Could not add custom_description: {e}")
+
+            # Add is_template to resources if missing
+            if "resources" in tables:
+                res_columns = [c["name"] for c in inspector.get_columns("resources")]
+                if "is_template" not in res_columns:
+                    logger.info("Adding 'is_template' column to 'resources' table...")
+                    try:
+                        conn.execute(text("ALTER TABLE resources ADD COLUMN is_template BOOLEAN DEFAULT FALSE"))
+                    except Exception as e:
+                        logger.warning(f"Could not add is_template to resources: {e}")
             
             # Commit changes (SQLAlchemy 2.0 style)
             conn.commit()

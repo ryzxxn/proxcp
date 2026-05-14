@@ -9,8 +9,7 @@ import {
   Settings, 
   LogOut,
   Zap,
-  Moon,
-  Sun
+  Search
 } from 'lucide-react';
 import { authClient } from '@/lib/auth-client';
 import { useRouter } from 'next/navigation';
@@ -18,7 +17,7 @@ import { useRouter } from 'next/navigation';
 const navItems = [
   { name: 'Dashboard', href: '/', icon: LayoutDashboard },
   { name: 'Servers', href: '/servers', icon: Server },
-  { name: 'Tools', href: '/tools', icon: Wrench },
+  { name: 'Inspector', href: '/inspector', icon: Search },
   { name: 'Access Control', href: '/apikeys', icon: Key },
 ];
 

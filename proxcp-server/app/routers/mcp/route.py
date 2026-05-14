@@ -19,9 +19,10 @@ from fastmcp import Client
 from fastmcp.client.auth import BearerAuth
 
 # --- Import from new utility files ---
-from app.utils.database import get_db, Tool, ToolConfigMapping, ApiKey # <-- ADDED ApiKey
+from app.utils.database import get_db, Tool, ToolConfigMapping, ApiKey
 from app.utils.network import rewrite_docker_url
 from app.utils.connections import connection_manager
+from app.utils.toon import to_toon
 # Using the path from your provided file
 from app.utils.track import log_transaction
 # -------------------------------------
@@ -47,7 +48,7 @@ logger.info(f"Using JWT_ALGORITHM: {JWT_ALGORITHM}") # Added log for verificatio
 DISABLE_AUTH = False
 
 # In-memory storage for sessions
-# {session_id: {"tool_map": {tool_name: {"url": str, "token": str}}}}
+# {session_id: {"tool_map": {tool_name: {"url": str, "token": str}}, "resource_map": {uri: {"url": str, "token": str}}, "prompt_map": {name: {"url": str, "token": str}}}}
 sessions: Dict[str, Dict[str, Any]] = {}  
 
 # JSON-RPC models
@@ -74,28 +75,59 @@ class JSONRPCResponse(JSONRPCBase):
 async def get_auth_info_from_token(
     authorization: Optional[str] = Header(None), 
     token: Optional[str] = Query(None),
-    db: Session = Depends(get_db) # <-- ADDED
+    toon_header: Optional[str] = Header(None, alias="Toon"),
+    db: Session = Depends(get_db)
 ):
     if DISABLE_AUTH:
-        return "user123", None
+        return "user123", None, False
 
     # Allow token to be passed via query parameter (useful for EventSource which can't send custom headers)
     if not authorization and not token:
         logger.error("No authorization token provided")
         raise HTTPException(status_code=401, detail="No authorization token provided")
 
+    # Determine if TOON mode is requested
+    is_toon = (toon_header is not None) or \
+              (authorization and "toon" in authorization.lower()) or \
+              (token and "toon" in token.lower())
+
     # CRITICAL: Use the token exactly as provided. 
     # Do NOT strip 'Bearer ' or any other prefix. The user must provide the raw token.
     token_str = authorization if authorization else token
 
+    if not token_str:
+        raise HTTPException(status_code=401, detail="Missing token")
+
+    # --- API Key Lookup (pxp-...) ---
+    if token_str.startswith("pxp-"):
+        logger.debug(f"Verifying API key: {token_str[:10]}...")
+        query = select(ApiKey).where(ApiKey.key == token_str)
+        result = db.execute(query)
+        api_key = result.scalar_one_or_none()
+
+        if not api_key:
+            logger.error("API key not found in registry")
+            raise HTTPException(status_code=401, detail="Invalid API key")
+        
+        if not api_key.is_active:
+            logger.warning(f"Rejected deactivated key for config: {api_key.tool_config_id}")
+            raise HTTPException(status_code=403, detail="API key is deactivated")
+            
+        return api_key.user_id, api_key.tool_config_id, is_toon
+    # --------------------------------
+
     try:
-        if not token_str or not JWT_SECRET:
-            raise HTTPException(status_code=401, detail="Missing token or configuration")
+        if not JWT_SECRET:
+            raise HTTPException(status_code=401, detail="Missing JWT configuration")
             
         # This will now correctly use ["HS256"]
         payload = jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
         name = payload.get("user_id")
         tool_config_id: Optional[str] = payload.get("tool_config_id")
+        
+        # Also check for toon claim in JWT
+        if payload.get("toon") is True:
+            is_toon = True
         
         if name is None:
             logger.error("user_id not found in JWT payload")
@@ -120,7 +152,7 @@ async def get_auth_info_from_token(
         # -----------------------------------------------
 
         logger.debug(f"Extracted user_id: {name}, tool_config_id: {tool_config_id}")
-        return name, tool_config_id
+        return name, tool_config_id, is_toon
     except JWTError as e:
         logger.error(f"JWT decode error: {e}")
         raise HTTPException(status_code=401, detail="Invalid token")
@@ -129,15 +161,17 @@ async def get_auth_info_from_token(
 async def sse_endpoint(
     authorization: Optional[str] = Header(None), 
     token: Optional[str] = Query(None),
+    toon_header: Optional[str] = Header(None, alias="Toon"),
     db: Session = Depends(get_db)
 ):
     """Establish SSE connection. Bypasses JWT auth if DISABLE_AUTH=True."""
     if DISABLE_AUTH:
         username = "user123"
         tool_config_id = None
+        is_toon = (toon_header is not None)
         logger.debug(f"Authentication disabled, using hardcoded user_id={username}")
     else:
-        username, tool_config_id = await get_auth_info_from_token(authorization, token, db)
+        username, tool_config_id, is_toon = await get_auth_info_from_token(authorization, token, toon_header, db)
         logger.debug(f"Authentication enabled, user_id: {username}")
 
     session_id = str(uuid.uuid4()).replace('-', '')
@@ -161,7 +195,10 @@ async def sse_endpoint(
         "queue": queue, 
         "username": username,
         "tool_config_id": tool_config_id,
-        "tool_map": {}
+        "tool_map": {},
+        "resource_map": {},
+        "prompt_map": {},
+        "is_toon": is_toon
     }
 
     sse_start_time = time.perf_counter()
@@ -230,7 +267,7 @@ async def handle_mcp_post(
     auth_info: tuple = Depends(get_auth_info_from_token)
 ):
     """Handle standard JSON-RPC POST requests to the MCP endpoint."""
-    username, tool_config_id = auth_info
+    username, tool_config_id, is_toon = auth_info
     logger.debug(f"Received POST request to /mcp from user: {username}")
     
     if body is None:
@@ -239,7 +276,7 @@ async def handle_mcp_post(
     try:
         request = JSONRPCRequest(**body)
         # Use None for session_id to indicate a stateless POST request
-        response = await handle_request(request, None, username, tool_config_id, db)
+        response = await handle_request(request, None, username, tool_config_id, db, is_toon)
         return response
     except ValidationError as e:
         logger.error(f"JSON-RPC validation error: {e}")
@@ -267,6 +304,7 @@ async def handle_messages(
     queue = sessions[session_id]["queue"]
     username = sessions[session_id]["username"]
     tool_config_id = sessions[session_id].get("tool_config_id")
+    is_toon = sessions[session_id].get("is_toon", False)
 
     try:
         if body is None:
@@ -274,7 +312,7 @@ async def handle_messages(
         if "id" in body:
             request = JSONRPCRequest(**body)
             logger.debug(f"[{session_id}] Validated client message: root={request}")
-            response = await handle_request(request, session_id, username, tool_config_id, db)
+            response = await handle_request(request, session_id, username, tool_config_id, db, is_toon)
             await queue.put(response)
         else:
             notification = JSONRPCNotification(**body)
@@ -290,13 +328,24 @@ async def handle_messages(
     return {"status": "accepted"}
 
 # Handle JSON-RPC requests
-async def handle_request(request: JSONRPCRequest, session_id: Optional[str], username: str, tool_config_id: Optional[str], db: Session) -> Dict[str, Any]:
+async def handle_request(
+    request: JSONRPCRequest, 
+    session_id: Optional[str], 
+    username: str, 
+    tool_config_id: Optional[str], 
+    db: Session,
+    is_toon: bool = False
+) -> Dict[str, Any]:
     # Note: 'username' is now the authenticated user_id from the session
     logger.debug(f"[{session_id or 'stateless'}] Processing request: {request.method} by user: {username}")
     
     start_time = time.perf_counter()
     start_dt = datetime.datetime.utcnow()
     
+    # --- EXPERIMENTAL: TOON Formatting ---
+    # Moved detection to session level
+    # ------------------------------------
+
     response = JSONRPCResponse(id=request.id)
 
     tool_name_to_log: Optional[str] = None
@@ -315,7 +364,141 @@ async def handle_request(request: JSONRPCRequest, session_id: Optional[str], use
                 "serverInfo": {"name": "proxcp-server", "version": "1.0.0"}
             }
         elif request.method == "resources/list":
-            response.result = {"resources": []}
+            logger.debug(f"[{session_id or 'stateless'}] Fetching resources for user: {username}")
+            from app.utils.cache import tool_cache
+            cached_resources = tool_cache.get_resources(username, tool_config_id)
+            
+            static_resources = []
+            if session_id and session_id in sessions:
+                resource_map = sessions[session_id].get("resource_map", {})
+                resource_map.clear()
+            else:
+                resource_map = None
+
+            for r in cached_resources:
+                if not r.get("is_template"):
+                    static_resources.append({
+                        "uri": r["uri"],
+                        "name": r["name"],
+                        "description": r["description"],
+                        "mimeType": r["mimeType"]
+                    })
+                    if resource_map is not None:
+                        resource_map[r["uri"]] = {"url": r["server_url"]}
+
+            response.result = {"resources": static_resources}
+            if is_toon:
+                response.result["toon"] = to_toon(static_resources)
+
+        elif request.method == "resources/templates/list":
+            logger.debug(f"[{session_id or 'stateless'}] Fetching resource templates for user: {username}")
+            from app.utils.cache import tool_cache
+            cached_resources = tool_cache.get_resources(username, tool_config_id)
+            
+            templates = []
+            if session_id and session_id in sessions:
+                resource_map = sessions[session_id].get("resource_map", {})
+            else:
+                resource_map = None
+
+            for r in cached_resources:
+                if r.get("is_template"):
+                    templates.append({
+                        "uriTemplate": r["uri"],
+                        "name": r["name"],
+                        "description": r["description"],
+                        "mimeType": r["mimeType"]
+                    })
+                    if resource_map is not None:
+                        resource_map[r["uri"]] = {"url": r["server_url"]}
+
+            response.result = {"resourceTemplates": templates}
+            if is_toon:
+                response.result["toon"] = to_toon(templates)
+
+        elif request.method == "resources/read":
+            params = request.params or {}
+            uri = params.get("uri")
+            if not uri:
+                response.error = {"code": -32602, "message": "URI is required"}
+            else:
+                target = None
+                if session_id and session_id in sessions:
+                    target = sessions[session_id].get("resource_map", {}).get(uri)
+                
+                if not target:
+                    # Fallback scan DB
+                    from app.utils.database import Resource, UserServerConfig
+                    query = (
+                        select(Resource, UserServerConfig.token)
+                        .join(UserServerConfig, (Resource.server_url == UserServerConfig.url) & (Resource.user_id == UserServerConfig.user_id))
+                        .where(Resource.user_id == username, Resource.uri == uri, Resource.is_active == True)
+                    )
+                    res_row = db.execute(query).first()
+                    if res_row:
+                        target = {"url": res_row[0].server_url, "token": res_row[1]}
+
+                if not target:
+                    response.error = {"code": -32601, "message": f"Resource {uri} not found"}
+                else:
+                    client = await connection_manager.get_client(target["url"], target.get("token"))
+                    res = await client.read_resource(uri)
+                    response.result = res.model_dump() if hasattr(res, "model_dump") else res
+
+        elif request.method == "prompts/list":
+            logger.debug(f"[{session_id or 'stateless'}] Fetching prompts for user: {username}")
+            from app.utils.cache import tool_cache
+            cached_prompts = tool_cache.get_prompts(username, tool_config_id)
+            
+            prompts_list = []
+            if session_id and session_id in sessions:
+                prompt_map = sessions[session_id].get("prompt_map", {})
+                prompt_map.clear()
+            else:
+                prompt_map = None
+
+            for p in cached_prompts:
+                prompts_list.append({
+                    "name": p["name"],
+                    "description": p["description"],
+                    "arguments": p["arguments"]
+                })
+                if prompt_map is not None:
+                    prompt_map[p["name"]] = {"url": p["server_url"]}
+            
+            response.result = {"prompts": prompts_list}
+            if is_toon:
+                response.result["toon"] = to_toon(prompts_list)
+
+        elif request.method == "prompts/get":
+            params = request.params or {}
+            name = params.get("name")
+            args = params.get("arguments") or {}
+            if not name:
+                response.error = {"code": -32602, "message": "Prompt name is required"}
+            else:
+                target = None
+                if session_id and session_id in sessions:
+                    target = sessions[session_id].get("prompt_map", {}).get(name)
+                
+                if not target:
+                    # Fallback scan DB
+                    from app.utils.database import Prompt, UserServerConfig
+                    query = (
+                        select(Prompt, UserServerConfig.token)
+                        .join(UserServerConfig, (Prompt.server_url == UserServerConfig.url) & (Prompt.user_id == UserServerConfig.user_id))
+                        .where(Prompt.user_id == username, Prompt.name == name, Prompt.is_active == True)
+                    )
+                    p_row = db.execute(query).first()
+                    if p_row:
+                        target = {"url": p_row[0].server_url, "token": p_row[1]}
+
+                if not target:
+                    response.error = {"code": -32601, "message": f"Prompt {name} not found"}
+                else:
+                    client = await connection_manager.get_client(target["url"], target.get("token"))
+                    res = await client.get_prompt(name, args)
+                    response.result = res.model_dump() if hasattr(res, "model_dump") else res
         
         elif request.method == "tools/list":
             logger.debug(f"[{session_id or 'stateless'}] Fetching tools for user: {username}, config: {tool_config_id}")
@@ -363,6 +546,8 @@ async def handle_request(request: JSONRPCRequest, session_id: Optional[str], use
                     logger.warning(f"Skipping invalid tool definition for user {username}, tool {tool_data.get('name')}: {e}")
             
             response.result = {"tools": tools_list}
+            if is_toon:
+                response.result["toon"] = to_toon(tools_list)
             logger.debug(f"[{session_id or 'stateless'}] Returning {len(tools_list)} tools for user {username}")
 
         elif request.method == "tools/call":
@@ -479,6 +664,36 @@ async def handle_request(request: JSONRPCRequest, session_id: Optional[str], use
             response.result = {"resourceTemplates": []}
         else:
             response.error = {"code": -32601, "message": "Method not found"}
+
+        # --- EXPERIMENTAL: Apply TOON transformation ---
+        if is_toon and response.result:
+            from app.utils.toon import to_toon
+            try:
+                # 1. Handle tools/list specifically
+                if request.method == "tools/list" and "tools" in response.result:
+                    # Simplify tool list for TOON
+                    simplified_tools = []
+                    for t in response.result["tools"]:
+                        simplified_tools.append({
+                            "name": t["name"],
+                            "description": t.get("description", ""),
+                            "schema": t.get("inputSchema", {})
+                        })
+                    response.result = {"tools_toon": to_toon(simplified_tools)}
+
+                # 2. Handle ToolResult (from tools/call)
+                elif hasattr(response.result, 'content'):
+                    for item in response.result.content:
+                        if item.type == 'text':
+                            try:
+                                # Try to parse text as JSON and convert to TOON
+                                data = json.loads(item.text)
+                                item.text = to_toon(data)
+                            except:
+                                pass # Not JSON
+            except Exception as e:
+                logger.warning(f"TOON transformation failed: {e}")
+        # -----------------------------------------------
             
     except Exception as e:
         logger.error(f"[{session_id}] Unhandled error processing request {request.method}: {e}", exc_info=True)

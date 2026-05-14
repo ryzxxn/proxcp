@@ -2,8 +2,14 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-const dbPath = path.resolve(__dirname, '../auth.db');
+const dbPath = path.resolve(__dirname, '../data/auth.db');
 const migrationDir = path.resolve(__dirname, '../better-auth_migrations');
+
+// Ensure data directory exists
+const dataDir = path.dirname(dbPath);
+if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+}
 
 console.log(`Initializing database at: ${dbPath}`);
 

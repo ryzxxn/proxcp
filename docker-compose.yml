@@ -17,6 +17,8 @@ services:
         - NEXT_PUBLIC_API_URL=http://localhost:8000
     ports:
       - "3005:3005"
+    volumes:
+      - proxcp_auth:/app/data
     env_file:
       - ./proxcp-client/.env
     depends_on:
@@ -25,3 +27,4 @@ services:
 
 volumes:
   proxcp_data:
+  proxcp_auth:

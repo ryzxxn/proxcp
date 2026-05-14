@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict
 import uuid
 import os
 import datetime
+import secrets
 from jose import jwt
 
 from app.utils.database import get_db, ApiKey, ToolConfigMapping, Tool
@@ -55,29 +56,22 @@ def create_api_key(
     db: Session = Depends(get_db)
 ):
     """
-    Creates a new API key (JWT token) for the user.
+    Creates a new short, friendly API key (pxp-...) for the user.
+    The internal mapping is stored in the database.
     """
     # Generate a unique tool_config_id
     tool_config_id = str(uuid.uuid4())
     
-    # Create the JWT payload
-    payload = {
-        "user_id": request.user_id,
-        "tool_config_id": tool_config_id,
-        "type": "api_key",
-        "iat": datetime.datetime.utcnow()
-        # API keys typically do not expire quickly, you can add 'exp' if needed
-    }
-    
-    # Generate the JWT token
-    token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    # Generate a high-entropy short key
+    # secrets.token_urlsafe(24) results in ~32 characters
+    short_key = f"pxp-{secrets.token_urlsafe(24)}"
     
     # Create database entry
     new_api_key = ApiKey(
         user_id=request.user_id,
         name=request.name,
         tool_config_id=tool_config_id,
-        key=token
+        key=short_key
     )
     
     db.add(new_api_key)

@@ -1,0 +1,22 @@
+services:
+  resource-server:
+    build: .
+    ports:
+      - "2000:2000"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - .:/app
+    command: ["uv", "run", "fastmcp", "run", "resources/resource.py", "--port", "2000", "--host", "0.0.0.0", "--transport", "sse"]
+    restart: always
+
+  prompt-server:
+    build: .
+    ports:
+      - "2001:2001"
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - .:/app
+    command: ["uv", "run", "fastmcp", "run", "prompt/prompt.py", "--port", "2001", "--host", "0.0.0.0", "--transport", "sse"]
+    restart: always

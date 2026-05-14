@@ -19,8 +19,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   if (isPending) {
     return (
-      <div className="h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
-        <Loader2 className="w-8 h-8 text-slate-900 dark:text-white animate-spin" />
+      <div className="h-screen flex items-center justify-center bg-slate-50">
+        <Loader2 className="w-8 h-8 text-slate-900 animate-spin" />
       </div>
     );
   }

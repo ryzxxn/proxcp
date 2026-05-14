@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from fastmcp import Client
 from fastmcp.client.auth import BearerAuth
 # --- (MODIFIED) Import all required DB models ---
-from app.utils.database import get_db, Tool, Transaction, UserServerConfig, get_db_context
+from app.utils.database import get_db, Tool, Transaction, UserServerConfig, get_db_context, Resource, Prompt
 from app.utils.network import rewrite_docker_url
 from app.utils.connections import connection_manager
 from app.utils.track import log_transaction # <-- ADDED
@@ -66,23 +66,15 @@ class ServerManager:
                 except Exception as e:
                     logger.warning(f"Database cache check failed for {url}: {e}")
 
-                # 2. Fetch tools from the server
+                # 2. Fetch from the server
                 for attempt in range(retries):
                     try:
                         client = await connection_manager.get_client(url, token)
+                        
+                        # --- SYNC TOOLS ---
                         fetched_tools = await client.list_tools()
                         tools_list = self._convert_tools(fetched_tools, url)
 
-                        if not tools_list:
-                            # ... (rest of the logic for no tools)
-                            if force_refresh or not db_tools:
-                                db.query(Tool).filter(
-                                    Tool.user_id == user_id,
-                                    Tool.server_url == url
-                                ).update({"is_active": False})
-                                db.commit()
-                            return url, {"status": "success", "tools": []}
-                        
                         existing_db_tools = {
                             t.name: t for t in db.query(Tool).filter(
                                 Tool.user_id == user_id,
@@ -115,10 +107,131 @@ class ServerManager:
                         for name, tool in existing_db_tools.items():
                             if name not in seen_tool_names:
                                 tool.is_active = False
+
+                        # --- SYNC RESOURCES & TEMPLATES ---
+                        try:
+                            # 1. Fetch static resources
+                            fetched_resources = await client.list_resources()
+                            
+                            # 2. Fetch resource templates
+                            try:
+                                fetched_templates = await client.list_resource_templates()
+                            except Exception as te:
+                                logger.debug(f"Server {url} does not support resource templates: {te}")
+                                fetched_templates = []
+
+                            existing_db_resources = {
+                                r.uri: r for r in db.query(Resource).filter(
+                                    Resource.user_id == user_id,
+                                    Resource.server_url == url
+                                ).all()
+                            }
+                            seen_uris = set()
+                            
+                            # Process static resources
+                            for r in fetched_resources:
+                                uri = str(r.uri)
+                                seen_uris.add(uri)
+                                mime_type = r.mimeType if hasattr(r, "mimeType") else r.mime_type
+                                if uri in existing_db_resources:
+                                    db_res = existing_db_resources[uri]
+                                    db_res.name = r.name
+                                    db_res.description = r.description
+                                    db_res.mime_type = str(mime_type) if mime_type else None
+                                    db_res.is_active = True
+                                    db_res.is_template = False
+                                else:
+                                    db_res = Resource(
+                                        user_id=user_id,
+                                        uri=uri,
+                                        name=r.name,
+                                        description=r.description,
+                                        mime_type=str(mime_type) if mime_type else None,
+                                        server_url=url,
+                                        is_active=True,
+                                        is_template=False
+                                    )
+                                    db.add(db_res)
+
+                            # Process templates
+                            for t in fetched_templates:
+                                raw_uri = t.uriTemplate if hasattr(t, "uriTemplate") else t.uri_template
+                                uri = str(raw_uri)
+                                seen_uris.add(uri)
+                                mime_type = t.mimeType if hasattr(t, "mimeType") else t.mime_type
+                                if uri in existing_db_resources:
+                                    db_res = existing_db_resources[uri]
+                                    db_res.name = t.name
+                                    db_res.description = t.description
+                                    db_res.mime_type = str(mime_type) if mime_type else None
+                                    db_res.is_active = True
+                                    db_res.is_template = True
+                                else:
+                                    db_res = Resource(
+                                        user_id=user_id,
+                                        uri=uri,
+                                        name=t.name,
+                                        description=t.description,
+                                        mime_type=str(mime_type) if mime_type else None,
+                                        server_url=url,
+                                        is_active=True,
+                                        is_template=True
+                                    )
+                                    db.add(db_res)
+                            
+                            for uri, res in existing_db_resources.items():
+                                if uri not in seen_uris:
+                                    res.is_active = False
+                        except Exception as e:
+                            logger.warning(f"Failed to sync resources from {url}: {e}")
+
+                        # --- SYNC PROMPTS ---
+                        try:
+                            fetched_prompts = await client.list_prompts()
+                            existing_db_prompts = {
+                                p.name: p for p in db.query(Prompt).filter(
+                                    Prompt.user_id == user_id,
+                                    Prompt.server_url == url
+                                ).all()
+                            }
+                            seen_prompt_names = set()
+                            for p in fetched_prompts:
+                                name = p.name
+                                seen_prompt_names.add(name)
+                                # Convert arguments to JSON string if they exist
+                                args_json = None
+                                if p.arguments:
+                                    args_list = []
+                                    for arg in p.arguments:
+                                        arg_dict = arg.model_dump() if hasattr(arg, "model_dump") else vars(arg)
+                                        args_list.append(arg_dict)
+                                    args_json = json.dumps(args_list)
+
+                                if name in existing_db_prompts:
+                                    db_p = existing_db_prompts[name]
+                                    db_p.description = p.description
+                                    db_p.arguments = args_json
+                                    db_p.is_active = True
+                                else:
+                                    db_p = Prompt(
+                                        user_id=user_id,
+                                        name=name,
+                                        description=p.description,
+                                        arguments=args_json,
+                                        server_url=url,
+                                        is_active=True
+                                    )
+                                    db.add(db_p)
+                            
+                            for name, pr in existing_db_prompts.items():
+                                if name not in seen_prompt_names:
+                                    pr.is_active = False
+                        except Exception as e:
+                            logger.warning(f"Failed to sync prompts from {url}: {e}")
                         
                         db.commit()
-                        logger.info(f"Successfully synced {len(tools_list)} tools from {url} for user {user_id}")
-                        return url, {"status": "success", "tools": tools_list}
+                        logger.info(f"Successfully fully synced {url} for user {user_id}")
+                        return url, {"status": "success", "tools_count": len(tools_list)}
                     except Exception as e:
                         # Clear dead client from manager
                         await connection_manager.remove_client(url, token)
@@ -435,7 +548,7 @@ async def update_server_config(
                     force_refresh=True
                 )
                 logger.info(f"Auto-synced tools for updated server {db_config.url}")
-                # If deactivated, we might want to clear its tools
+                # If deactivated, we might want to clear its tools, resources, and prompts
                 tools_to_delete = db.query(Tool).filter(
                     Tool.user_id == user_id,
                     Tool.server_url == db_config.url
@@ -451,8 +564,19 @@ async def update_server_config(
                 for t in tools_to_delete:
                     db.delete(t)
                 
+                # Clear resources and prompts
+                db.query(Resource).filter(
+                    Resource.user_id == user_id,
+                    Resource.server_url == db_config.url
+                ).delete()
+                
+                db.query(Prompt).filter(
+                    Prompt.user_id == user_id,
+                    Prompt.server_url == db_config.url
+                ).delete()
+                
                 db.commit()
-                logger.info(f"Deactivated server {db_config.url}, cleared tools and mappings.")
+                logger.info(f"Deactivated server {db_config.url}, cleared all associated components.")
         except Exception as sync_err:
             logger.warning(f"Auto-sync failed for updated server {db_config.url}: {sync_err}")
         # ------------------
@@ -510,6 +634,17 @@ async def delete_server_config(
         deleted_tools_count = len(tools_to_delete)
         for t in tools_to_delete:
             db.delete(t)
+        
+        # 5. Delete all resources and prompts associated with this server
+        db.query(Resource).filter(
+            Resource.user_id == user_id,
+            Resource.server_url == server_url
+        ).delete()
+        
+        db.query(Prompt).filter(
+            Prompt.user_id == user_id,
+            Prompt.server_url == server_url
+        ).delete()
         
         db.commit()
         logger.info(f"Deleted server config ID {server_id} for user {user_id}.")

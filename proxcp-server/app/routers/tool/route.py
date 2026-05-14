@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, Header, Body
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from typing import List, Optional, Any, Dict
 from pydantic import BaseModel, Field, ConfigDict
 import logging
 import time
-import datetime # <-- ADDED
+import datetime
+import json
 
 # --- New Imports for fastmcp ---
 from fastmcp import Client
@@ -35,12 +36,18 @@ class ToolResponse(BaseModel):
     id: uuid.UUID
     user_id: str
     name: str
-    definition: Optional[str]
+    custom_name: Optional[str] = None # <-- ADDED
+    custom_description: Optional[str] = None # <-- ADDED
+    definition: Optional[Any] # <-- CHANGED from str to Any
     server_url: str
     is_active: bool
     server_name: Optional[str]
 
     model_config = ConfigDict(from_attributes=True)
+
+class ToolUpdate(BaseModel):
+    custom_name: Optional[str] = None
+    custom_description: Optional[str] = None
 
 # --- Pydantic Request Model for Execution (Updated) ---
 
@@ -57,9 +64,11 @@ class ToolExecutionRequest(BaseModel):
 
 # --- API Endpoint (Existing) ---
 
-@router.get("/tools", response_model=List[ToolResponse])
+@router.get("/tools")
 def list_user_tools(
     user_id: str = Query(..., description="The ID of the user to fetch tools for"),
+    format: Optional[str] = Query(None, description="Response format: 'json' or 'toon'"),
+    toon: Optional[str] = Header(None, alias="Toon"),
     db: Session = Depends(get_db)
 ):
     """
@@ -67,16 +76,28 @@ def list_user_tools(
     Served from memory cache with 5-minute DB refresh.
     """
     from app.utils.cache import tool_cache
+    from app.utils.toon import to_toon
+    from fastapi.responses import Response
     
     try:
         results = tool_cache.get_tools(user_id)
 
-        return [
+        def _parse_definition(d):
+            if not d: return None
+            if isinstance(d, dict): return d
+            try:
+                return json.loads(d)
+            except:
+                return d
+
+        tools = [
             ToolResponse(
                 id=tool["id"],
                 user_id=tool["user_id"],
                 name=tool["name"],
-                definition=tool["definition"],
+                custom_name=tool.get("custom_name"),
+                custom_description=tool.get("custom_description"),
+                definition=_parse_definition(tool.get("definition")),
                 server_url=tool["server_url"],
                 is_active=tool["is_active"],
                 server_name=tool["server_name"]
@@ -84,17 +105,168 @@ def list_user_tools(
             for tool in results
         ]
 
+        if format == "toon":
+            # Convert to dict for toon encoder
+            tool_dicts = [t.model_dump() for t in tools]
+            toon_output = to_toon(tool_dicts)
+            return Response(content=toon_output, media_type="text/plain")
+        
+        if toon:
+            # Return both JSON and TOON format for compatibility
+            tool_dicts = [t.model_dump() for t in tools]
+            return {
+                "tools": tools,
+                "toon": to_toon(tool_dicts)
+            }
+
+        return tools
+
     except Exception as e:
         logger.error(f"Error fetching tools for user_id {user_id}: {e}")
         raise HTTPException(
             status_code=500, 
             detail="An error occurred while fetching tools."
         )
-        logger.error(f"Error fetching tools for user_id {user_id}: {e}")
-        raise HTTPException(
-            status_code=500, 
-            detail="An error occurred while fetching tools."
-        )
+
+@router.get("/resources")
+async def list_user_resources(
+    user_id: str = Query(..., description="The ID of the user to fetch resources for"),
+    toon: Optional[str] = Header(None, alias="Toon"),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetches a list of all resources across all user's connected servers from memory cache.
+    """
+    from app.utils.cache import tool_cache
+    from app.utils.toon import to_toon
+    
+    try:
+        all_resources = tool_cache.get_resources(user_id)
+        
+        if toon:
+            return {
+                "resources": all_resources,
+                "toon": to_toon(all_resources)
+            }
+        return all_resources
+    except Exception as e:
+        logger.error(f"Error fetching resources for user_id {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/prompts")
+async def list_user_prompts(
+    user_id: str = Query(..., description="The ID of the user to fetch prompts for"),
+    toon: Optional[str] = Header(None, alias="Toon"),
+    db: Session = Depends(get_db)
+):
+    """
+    Fetches a list of all prompts across all user's connected servers from memory cache.
+    """
+    from app.utils.cache import tool_cache
+    from app.utils.toon import to_toon
+    
+    try:
+        all_prompts = tool_cache.get_prompts(user_id)
+        
+        if toon:
+            return {
+                "prompts": all_prompts,
+                "toon": to_toon(all_prompts)
+            }
+        return all_prompts
+    except Exception as e:
+        logger.error(f"Error fetching prompts for user_id {user_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/resources/read")
+async def read_user_resource(
+    user_id: str = Query(...),
+    uri: str = Query(...),
+    server_url: str = Query(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Reads a specific resource from a connected MCP server.
+    """
+    from app.utils.database import UserServerConfig
+    from app.utils.connections import connection_manager
+    
+    query = select(UserServerConfig).where(
+        UserServerConfig.user_id == user_id, 
+        UserServerConfig.url == server_url
+    )
+    server = db.execute(query).scalar_one_or_none()
+    
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+        
+    try:
+        client = await connection_manager.get_client(server.url, server.token)
+        res = await client.read_resource(uri)
+        return res.model_dump() if hasattr(res, "model_dump") else res
+    except Exception as e:
+        logger.error(f"Error reading resource {uri} from {server_url}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/prompts/get")
+async def get_user_prompt(
+    user_id: str = Query(...),
+    name: str = Query(...),
+    server_url: str = Query(...),
+    arguments: Dict[str, Any] = Body({}),
+    db: Session = Depends(get_db)
+):
+    """
+    Renders a specific prompt from a connected MCP server.
+    """
+    from app.utils.database import UserServerConfig
+    from app.utils.connections import connection_manager
+    
+    query = select(UserServerConfig).where(
+        UserServerConfig.user_id == user_id, 
+        UserServerConfig.url == server_url
+    )
+    server = db.execute(query).scalar_one_or_none()
+    
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+        
+    try:
+        client = await connection_manager.get_client(server.url, server.token)
+        res = await client.get_prompt(name, arguments)
+        return res.model_dump() if hasattr(res, "model_dump") else res
+    except Exception as e:
+        logger.error(f"Error getting prompt {name} from {server_url}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.patch("/tools/{tool_id}", response_model=ToolResponse)
+def update_tool(
+    tool_id: uuid.UUID,
+    request: ToolUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Updates a tool's custom name and description.
+    """
+    query = select(Tool).where(Tool.id == tool_id)
+    tool = db.execute(query).scalar_one_or_none()
+    
+    if not tool:
+        raise HTTPException(status_code=404, detail="Tool not found")
+    
+    if request.custom_name is not None:
+        tool.custom_name = request.custom_name
+    if request.custom_description is not None:
+        tool.custom_description = request.custom_description
+        
+    db.commit()
+    db.refresh(tool)
+    
+    # Invalidate cache
+    from app.utils.cache import tool_cache
+    tool_cache.invalidate(tool.user_id)
+    
+    return tool
 
 # --- API Endpoint (Updated with Latency Tracking and Return) ---
 

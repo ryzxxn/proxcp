@@ -1,0 +1,17 @@
+# PROXCP PROTOCOL RULES
+
+1. SYSTEM INTEGRITY
+   - All connections must be via SSE or STDIO transport.
+   - API Keys (pxp-*) must be kept confidential.
+
+2. RESOURCE ACCESS
+   - Dynamic resources are lazy-loaded on demand.
+   - Resource templates require valid URI parameter replacement.
+
+3. LLM INTERACTION
+   - Use TOON format for optimized token consumption.
+   - Prompts must be used for structured conversation initialization.
+
+4. EMERGENCY PROTOCOLS
+   - In case of sync failure, trigger full server refresh.
+   - Transaction logs are the source of truth for audit trails.

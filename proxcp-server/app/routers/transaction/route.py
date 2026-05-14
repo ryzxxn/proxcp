@@ -93,6 +93,13 @@ def _group_transactions_by_session(results: List[Transaction]) -> Dict[str, Sess
             logger.warning(f"Could not parse response_data JSON for tx_id {tx.id}")
             response_dict = {"error": "invalid_json"}
 
+        # Calculate latency
+        latency = None
+        st = getattr(tx, 'start_timestamp', None)
+        et = getattr(tx, 'end_timestamp', None)
+        if st and et:
+            latency = (et - st).total_seconds()
+
         # Create the Pydantic response object
         tx_response = TransactionResponse(
             id=tx.id,
@@ -104,11 +111,11 @@ def _group_transactions_by_session(results: List[Transaction]) -> Dict[str, Sess
             status=tx.status,
             response_data=response_dict,
             tool_name=tx.tool_name,
-            tool_config_id=tx.tool_config_id, # <-- ADDED
+            tool_config_id=tx.tool_config_id,
             timestamp=tx.timestamp,
-            start_timestamp=getattr(tx, 'start_timestamp', None),
-            end_timestamp=getattr(tx, 'end_timestamp', None),
-            latency_seconds=tx.latency_seconds
+            start_timestamp=st,
+            end_timestamp=et,
+            latency_seconds=latency
         )
         
         # Add the formatted transaction to its session group
@@ -226,21 +233,38 @@ def _parse_transactions_list(results: List[Transaction]) -> List[TransactionResp
 
 @router.get(
     "/transactions",
-    response_model=Dict[str, SessionTransactionGroup], 
     summary="Get all Transactions"
 )
 def get_session_transactions(
     user_id: str = Query(..., description="The ID of the user to fetch transactions for."),
+    format: Optional[str] = Query(None, description="Response format: 'json' or 'toon'"),
     db: Session = Depends(get_db)
 ):
     """
     Fetches all transactions for a user.
-    
-    Transactions are grouped by their respective session IDs.
-    The response for each session includes:
-    - session_start_time: The timestamp of the first (earliest) entry in that session.
-    - transactions: A list of all transactions, sorted by most recent first.
     """
+    from app.utils.toon import to_toon
+    from fastapi.responses import Response
+
+    query = (
+        select(Transaction)
+        .where(Transaction.user_id == user_id)
+        .order_by(Transaction.timestamp.desc())
+    )
+    results = db.execute(query).scalars().all()
+    
+    grouped = _group_transactions_by_session(list(results))
+
+    if format == "toon":
+        flat_tx = []
+        for session_id, group in grouped.items():
+            for tx in group.transactions:
+                t_dict = tx.model_dump()
+                t_dict["session_id"] = session_id
+                flat_tx.append(t_dict)
+        return Response(content=to_toon(flat_tx), media_type="text/plain")
+    
+    return grouped
     
     try:
         # --- 1. Build the query ---
