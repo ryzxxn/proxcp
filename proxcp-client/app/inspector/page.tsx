@@ -195,25 +195,23 @@ export default function InspectorPage() {
             const queryParts: string[] = [];
             params.forEach(p => {
               const cleanP = p.replace(/\*$/, '');
-              const val = formInputs[cleanP];
+              // Match parameter names even if they have weird characters or escaping
+              const val = formInputs[cleanP] || formInputs[p];
               if (val) queryParts.push(`${cleanP}=${encodeURIComponent(val)}`);
             });
             const replacement = queryParts.length > 0 ? (prefix + queryParts.join('&')) : '';
-            resolvedUri = resolvedUri.replace(block, replacement);
+            resolvedUri = resolvedUri.split(block).join(replacement);
           } else {
             // Simple path replacement or other prefixes
-            let replacement = block;
+            let replacement = '';
             params.forEach(p => {
               const cleanP = p.replace(/\*$/, '');
-              const val = formInputs[cleanP];
+              const val = formInputs[cleanP] || formInputs[p];
               if (val) {
-                // If there was a prefix like / or ., we might want to keep it
                 replacement = prefix + encodeURIComponent(val);
-              } else {
-                replacement = ''; // Remove if empty
               }
             });
-            resolvedUri = resolvedUri.replace(block, replacement);
+            resolvedUri = resolvedUri.split(block).join(replacement);
           }
         });
       }

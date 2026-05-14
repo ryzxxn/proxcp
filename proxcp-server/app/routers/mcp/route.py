@@ -3,7 +3,9 @@ import json
 import logging
 import time
 import datetime # <-- ADDED
+import re # <-- ADDED
 from typing import Dict, Any, Optional, List
+import anyio # <-- ADDED
 from fastapi import FastAPI, HTTPException, Query, APIRouter, Depends, Header, status
 from pydantic import BaseModel, ValidationError, ConfigDict
 from sse_starlette.sse import EventSourceResponse
@@ -51,6 +53,38 @@ DISABLE_AUTH = False
 # {session_id: {"tool_map": {tool_name: {"url": str, "token": str}}, "resource_map": {uri: {"url": str, "token": str}}, "prompt_map": {name: {"url": str, "token": str}}}}
 sessions: Dict[str, Dict[str, Any]] = {}  
 
+def _uri_matches_template(uri: str, template: str) -> bool:
+    """
+    Simplistic RFC 6570 URI template matcher for routing.
+    Converts templates like 'weather://{city}/current' or 'api://search{?query,limit}'
+    into regex patterns for matching against incoming URIs.
+    """
+    try:
+        # Split by { } blocks
+        parts = re.split(r'(\{.+?\})', template)
+        regex_parts = []
+        for part in parts:
+            if part.startswith('{') and part.endswith('}'):
+                content = part[1:-1]
+                if content.startswith('?'):
+                    # Query parameter block: {?query,limit}
+                    # We just allow any query string starting with ?
+                    regex_parts.append(r'(\?.*)?')
+                elif content.endswith('*'):
+                    # Wildcard / path parameter: {path*}
+                    regex_parts.append(r'.*')
+                else:
+                    # Simple segment variable: {var}
+                    regex_parts.append(r'[^/?#]+')
+            else:
+                regex_parts.append(re.escape(part))
+        
+        pattern = '^' + ''.join(regex_parts) + '$'
+        return bool(re.match(pattern, uri))
+    except Exception as e:
+        logger.warning(f"Error matching URI {uri} against template {template}: {e}")
+        return False
+
 # JSON-RPC models
 class JSONRPCBase(BaseModel):
     jsonrpc: str = "2.0"
@@ -70,57 +104,6 @@ class JSONRPCResponse(JSONRPCBase):
     id: Optional[int]
     result: Optional[Any] = None
     error: Optional[Dict[str, Any]] = None
-
-# --- PROTOCOL CONSTANTS ---
-PROTOCOL_RESOURCES = [
-    {
-        "uri": "file://protocol/rules",
-        "name": "get_rules",
-        "description": "PROXCP Protocol Rules",
-        "mimeType": "text/markdown"
-    }
-]
-
-PROTOCOL_TEMPLATES = [
-    {
-        "name": "get_weather",
-        "uriTemplate": "weather://{city}/current",
-        "description": "Provides mock weather information for a specific city.",
-        "mimeType": "text/plain"
-    },
-    {
-        "name": "get_path_content",
-        "uriTemplate": "path://{filepath*}",
-        "description": "Echoes back the path requested via wildcard.",
-        "mimeType": "text/plain"
-    },
-    {
-        "name": "search_resources",
-        "uriTemplate": "api://search{?query,limit}",
-        "description": "Simulates a searchable resource index with query parameters.",
-        "mimeType": "text/plain"
-    }
-]
-
-PROTOCOL_RULES_CONTENT = """# PROXCP PROTOCOL RULES
-
-1. SYSTEM INTEGRITY
-   - All connections must be via SSE or STDIO transport.
-   - API Keys (pxp-*) must be kept confidential.
-
-2. RESOURCE ACCESS
-   - Dynamic resources are lazy-loaded on demand.
-   - Resource templates require valid URI parameter replacement.
-
-3. LLM INTERACTION
-   - Use TOON format for optimized token consumption.
-   - Prompts must be used for structured conversation initialization.
-
-4. EMERGENCY PROTOCOLS
-   - In case of sync failure, trigger full server refresh.
-   - Transaction logs are the source of truth for audit trails.
-"""
-# ---------------------------
 
 # Dependency to validate token and extract username and tool config id
 async def get_auth_info_from_token(
@@ -419,7 +402,7 @@ async def handle_request(
             from app.utils.cache import tool_cache
             cached_resources = tool_cache.get_resources(username, tool_config_id)
             
-            static_resources = PROTOCOL_RESOURCES.copy()
+            static_resources = []
             if session_id and session_id in sessions:
                 resource_map = sessions[session_id].get("resource_map", {})
                 resource_map.clear()
@@ -446,7 +429,7 @@ async def handle_request(
             from app.utils.cache import tool_cache
             cached_resources = tool_cache.get_resources(username, tool_config_id)
             
-            templates = PROTOCOL_TEMPLATES.copy()
+            templates = []
             if session_id and session_id in sessions:
                 resource_map = sessions[session_id].get("resource_map", {})
             else:
@@ -472,48 +455,6 @@ async def handle_request(
             uri = params.get("uri")
             if not uri:
                 response.error = {"code": -32602, "message": "URI is required"}
-            elif uri == "file://protocol/rules":
-                response.result = {
-                    "contents": [
-                        {
-                            "uri": uri,
-                            "mimeType": "text/markdown",
-                            "text": PROTOCOL_RULES_CONTENT
-                        }
-                    ]
-                }
-            elif uri.startswith("weather://"):
-                city = uri.split("/")[-2] if uri.endswith("/current") else "Unknown"
-                response.result = {
-                    "contents": [
-                        {
-                            "uri": uri,
-                            "mimeType": "text/plain",
-                            "text": f"Mock weather for {city}: Sunny, 72°F"
-                        }
-                    ]
-                }
-            elif uri.startswith("path://"):
-                path = uri.replace("path://", "")
-                response.result = {
-                    "contents": [
-                        {
-                            "uri": uri,
-                            "mimeType": "text/plain",
-                            "text": f"Echo: {path}"
-                        }
-                    ]
-                }
-            elif uri.startswith("api://search"):
-                response.result = {
-                    "contents": [
-                        {
-                            "uri": uri,
-                            "mimeType": "text/plain",
-                            "text": f"Search results for query at {uri}"
-                        }
-                    ]
-                }
             else:
                 target = None
                 if session_id and session_id in sessions:
@@ -522,20 +463,58 @@ async def handle_request(
                 if not target:
                     # Fallback scan DB
                     from app.utils.database import Resource, UserServerConfig
+                    
+                    # 1. Try exact match
                     query = (
                         select(Resource, UserServerConfig.token)
                         .join(UserServerConfig, (Resource.server_url == UserServerConfig.url) & (Resource.user_id == UserServerConfig.user_id))
                         .where(Resource.user_id == username, Resource.uri == uri, Resource.is_active == True)
                     )
                     res_row = db.execute(query).first()
+                    
                     if res_row:
                         target = {"url": res_row[0].server_url, "token": res_row[1]}
+                    else:
+                        # 2. Try matching the literal URI against stored template URIs
+                        # (Allowing users to request the template URI itself)
+                        query = (
+                            select(Resource, UserServerConfig.token)
+                            .join(UserServerConfig, (Resource.server_url == UserServerConfig.url) & (Resource.user_id == UserServerConfig.user_id))
+                            .where(Resource.user_id == username, Resource.uri == uri, Resource.is_active == True, Resource.is_template == True)
+                        )
+                        res_row = db.execute(query).first()
+                        if res_row:
+                            target = {"url": res_row[0].server_url, "token": res_row[1]}
+
+                    if not target:
+                        # 3. Try regex template match
+                        logger.debug(f"[{session_id or 'stateless'}] No exact resource match for {uri}, checking templates...")
+                        template_query = (
+                            select(Resource, UserServerConfig.token)
+                            .join(UserServerConfig, (Resource.server_url == UserServerConfig.url) & (Resource.user_id == UserServerConfig.user_id))
+                            .where(Resource.user_id == username, Resource.is_template == True, Resource.is_active == True)
+                        )
+                        templates = db.execute(template_query).all()
+                        for t_res, token in templates:
+                            if _uri_matches_template(uri, t_res.uri):
+                                logger.debug(f"[{session_id or 'stateless'}] URI {uri} matches template {t_res.uri} from server {t_res.server_url}")
+                                target = {"url": t_res.server_url, "token": token}
+                                break
 
                 if not target:
                     response.error = {"code": -32601, "message": f"Resource {uri} not found"}
                 else:
-                    client = await connection_manager.get_client(target["url"], target.get("token"))
-                    res = await client.read_resource(uri)
+                    try:
+                        client = await connection_manager.get_client(target["url"], target.get("token"))
+                        res = await client.read_resource(uri)
+                    except (anyio.ClosedResourceError, Exception) as e:
+                        if isinstance(e, anyio.ClosedResourceError):
+                            logger.warning(f"Connection to {target['url']} was closed, retrying once...")
+                            await connection_manager.remove_client(target["url"], target.get("token"))
+                            client = await connection_manager.get_client(target["url"], target.get("token"))
+                            res = await client.read_resource(uri)
+                        else:
+                            raise e
                     
                     if isinstance(res, list):
                         response.result = {"contents": res}
@@ -544,7 +523,7 @@ async def handle_request(
                     else:
                         response.result = res
             
-            # Apply TOON if requested (works for both built-ins and dynamic resources)
+            # Apply TOON if requested (works for dynamic resources)
             if is_toon and response.result and "contents" in response.result:
                 response.result["toon"] = to_toon(response.result["contents"])
 
@@ -599,8 +578,17 @@ async def handle_request(
                 if not target:
                     response.error = {"code": -32601, "message": f"Prompt {name} not found"}
                 else:
-                    client = await connection_manager.get_client(target["url"], target.get("token"))
-                    res = await client.get_prompt(name, args)
+                    try:
+                        client = await connection_manager.get_client(target["url"], target.get("token"))
+                        res = await client.get_prompt(name, args)
+                    except (anyio.ClosedResourceError, Exception) as e:
+                        if isinstance(e, anyio.ClosedResourceError):
+                            logger.warning(f"Connection to {target['url']} was closed, retrying once...")
+                            await connection_manager.remove_client(target["url"], target.get("token"))
+                            client = await connection_manager.get_client(target["url"], target.get("token"))
+                            res = await client.get_prompt(name, args)
+                        else:
+                            raise e
                     
                     if hasattr(res, "model_dump"):
                         response.result = res.model_dump()
@@ -731,9 +719,19 @@ async def handle_request(
                         
                         start_time_internal = time.perf_counter()
                         try:
-                            client = await connection_manager.get_client(target_server_url, token)
-                            logger.debug(f"[{session_id or 'stateless'}] Calling tool '{tool_name}' via persistent connection")
-                            result_data = await client.call_tool(tool_name, arguments) 
+                            try:
+                                client = await connection_manager.get_client(target_server_url, token)
+                                logger.debug(f"[{session_id or 'stateless'}] Calling tool '{tool_name}' via persistent connection")
+                                result_data = await client.call_tool(tool_name, arguments) 
+                            except (anyio.ClosedResourceError, Exception) as e:
+                                if isinstance(e, anyio.ClosedResourceError):
+                                    logger.warning(f"Connection to {target_server_url} was closed, retrying once...")
+                                    await connection_manager.remove_client(target_server_url, token)
+                                    client = await connection_manager.get_client(target_server_url, token)
+                                    result_data = await client.call_tool(tool_name, arguments)
+                                else:
+                                    raise e
+
                             # We still track internal latency for logging, but total latency is also tracked
                             logger.debug(f"[{session_id}] Tool '{tool_name}' internal execution time: {time.perf_counter() - start_time_internal:.4f}s.")
                             

@@ -30,11 +30,27 @@ class ConnectionManager:
 
             if key in self._clients:
                 client, _ = self._clients[key]
-                # Optional: Check if client is still responsive? 
-                # For now, we'll just update last_used. 
-                # If a call fails, the caller should handle removal.
-                self._clients[key] = (client, asyncio.get_event_loop().time())
-                return client
+                # Check if the client session is still active
+                # fastmcp Client has a 'session' attribute once entered
+                is_active = False
+                try:
+                    if hasattr(client, "session") and client.session:
+                        # Check if internal streams are closed
+                        # This is a bit implementation-specific for anyio/mcp
+                        is_active = True 
+                except:
+                    is_active = False
+
+                if is_active:
+                    self._clients[key] = (client, asyncio.get_event_loop().time())
+                    return client
+                else:
+                    logger.info(f"Existing client for {actual_url} seems inactive, re-creating")
+                    self._clients.pop(key)
+                    try:
+                        await client.__aexit__(None, None, None)
+                    except:
+                        pass
             
             logger.info(f"Creating new persistent connection to {actual_url}")
             auth_obj = BearerAuth(token) if token else None

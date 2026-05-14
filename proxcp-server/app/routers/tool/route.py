@@ -17,6 +17,7 @@ import fastmcp.exceptions as mcp_exc
 # --- Updated Imports ---
 from app.utils.database import get_db, Tool, UserServerConfig
 from app.utils.track import log_transaction
+import anyio
 # --- End Updated Imports ---
 import uuid  # <-- ADDED
 
@@ -141,14 +142,14 @@ async def list_user_resources(
     from app.utils.toon import to_toon
     
     try:
-        all_resources = tool_cache.get_resources(user_id)
+        results = tool_cache.get_resources(user_id)
         
         if toon:
             return {
-                "resources": all_resources,
-                "toon": to_toon(all_resources)
+                "resources": results,
+                "toon": to_toon(results)
             }
-        return all_resources
+        return results
     except Exception as e:
         logger.error(f"Error fetching resources for user_id {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -166,14 +167,14 @@ async def list_user_prompts(
     from app.utils.toon import to_toon
     
     try:
-        all_prompts = tool_cache.get_prompts(user_id)
+        results = tool_cache.get_prompts(user_id)
         
         if toon:
             return {
-                "prompts": all_prompts,
-                "toon": to_toon(all_prompts)
+                "prompts": results,
+                "toon": to_toon(results)
             }
-        return all_prompts
+        return results
     except Exception as e:
         logger.error(f"Error fetching prompts for user_id {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -190,6 +191,7 @@ async def read_user_resource(
     """
     from app.utils.database import UserServerConfig
     from app.utils.connections import connection_manager
+    from app.utils.toon import to_toon
     
     query = select(UserServerConfig).where(
         UserServerConfig.user_id == user_id, 
@@ -201,8 +203,17 @@ async def read_user_resource(
         raise HTTPException(status_code=404, detail="Server not found")
         
     try:
-        client = await connection_manager.get_client(server.url, server.token)
-        res = await client.read_resource(uri)
+        try:
+            client = await connection_manager.get_client(server.url, server.token)
+            res = await client.read_resource(uri)
+        except (anyio.ClosedResourceError, Exception) as e:
+            if isinstance(e, anyio.ClosedResourceError):
+                logger.warning(f"Connection to {server.url} was closed, retrying once...")
+                await connection_manager.remove_client(server.url, server.token)
+                client = await connection_manager.get_client(server.url, server.token)
+                res = await client.read_resource(uri)
+            else:
+                raise e
         return res.model_dump() if hasattr(res, "model_dump") else res
     except Exception as e:
         logger.error(f"Error reading resource {uri} from {server_url}: {e}")
@@ -232,8 +243,17 @@ async def get_user_prompt(
         raise HTTPException(status_code=404, detail="Server not found")
         
     try:
-        client = await connection_manager.get_client(server.url, server.token)
-        res = await client.get_prompt(name, arguments)
+        try:
+            client = await connection_manager.get_client(server.url, server.token)
+            res = await client.get_prompt(name, arguments)
+        except (anyio.ClosedResourceError, Exception) as e:
+            if isinstance(e, anyio.ClosedResourceError):
+                logger.warning(f"Connection to {server.url} was closed, retrying once...")
+                await connection_manager.remove_client(server.url, server.token)
+                client = await connection_manager.get_client(server.url, server.token)
+                res = await client.get_prompt(name, arguments)
+            else:
+                raise e
         return res.model_dump() if hasattr(res, "model_dump") else res
     except Exception as e:
         logger.error(f"Error getting prompt {name} from {server_url}: {e}")
