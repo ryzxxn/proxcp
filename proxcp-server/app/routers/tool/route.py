@@ -120,7 +120,7 @@ def list_user_tools(
                 "toon": to_toon(tool_dicts)
             }
 
-        return tools
+        return {"tools": tools}
 
     except Exception as e:
         logger.error(f"Error fetching tools for user_id {user_id}: {e}")
@@ -149,7 +149,7 @@ async def list_user_resources(
                 "resources": results,
                 "toon": to_toon(results)
             }
-        return results
+        return {"resources": results}
     except Exception as e:
         logger.error(f"Error fetching resources for user_id {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -174,7 +174,7 @@ async def list_user_prompts(
                 "prompts": results,
                 "toon": to_toon(results)
             }
-        return results
+        return {"prompts": results}
     except Exception as e:
         logger.error(f"Error fetching prompts for user_id {user_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

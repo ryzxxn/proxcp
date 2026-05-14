@@ -59,8 +59,27 @@ class ServerManager:
                         if db_tools:
                             if db_tools[0].server_token == token:
                                 tools_list = [json.loads(tool.definition) for tool in db_tools]
+                                
+                                # Also count resources and prompts for this server
+                                res_count = db.query(Resource).filter(
+                                    Resource.user_id == user_id,
+                                    Resource.server_url == url,
+                                    Resource.is_active == True
+                                ).count()
+                                
+                                prompt_count = db.query(Prompt).filter(
+                                    Prompt.user_id == user_id,
+                                    Prompt.server_url == url,
+                                    Prompt.is_active == True
+                                ).count()
+
                                 logger.info(f"Cache hit: Retrieved {len(tools_list)} active tools from DB for user {user_id} at {url}")
-                                return url, {"status": "success", "tools": tools_list}
+                                return url, {
+                                    "status": "success", 
+                                    "tools_count": len(tools_list),
+                                    "resources_count": res_count,
+                                    "prompts_count": prompt_count
+                                }
                             else:
                                 logger.info(f"Token changed for {url}. Forcing refresh.")
                 except Exception as e:
@@ -230,8 +249,18 @@ class ServerManager:
                             logger.warning(f"Failed to sync prompts from {url}: {e}")
                         
                         db.commit()
+                        
+                        # Invalidate tool cache to force refresh on next request
+                        from app.utils.cache import tool_cache
+                        tool_cache.invalidate(user_id)
+                        
                         logger.info(f"Successfully fully synced {url} for user {user_id}")
-                        return url, {"status": "success", "tools_count": len(tools_list)}
+                        return url, {
+                            "status": "success", 
+                            "tools_count": len(tools_list),
+                            "resources_count": len(seen_uris),
+                            "prompts_count": len(seen_prompt_names)
+                        }
                     except Exception as e:
                         # Clear dead client from manager
                         await connection_manager.remove_client(url, token)
@@ -249,7 +278,21 @@ class ServerManager:
         
         # Filter out None results to avoid dict() constructor error
         valid_results = [r for r in completed_results if r is not None]
-        return {"results": dict(valid_results)}
+        results_dict = dict(valid_results)
+        
+        # Calculate overall totals
+        total_tools = sum(r.get("tools_count", 0) for r in results_dict.values() if r.get("status") == "success")
+        total_resources = sum(r.get("resources_count", 0) for r in results_dict.values() if r.get("status") == "success")
+        total_prompts = sum(r.get("prompts_count", 0) for r in results_dict.values() if r.get("status") == "success")
+        
+        return {
+            "results": results_dict,
+            "totals": {
+                "tools": total_tools,
+                "resources": total_resources,
+                "prompts": total_prompts
+            }
+        }
 
     def _convert_tools(self, tools: List[Any], url: str) -> List[Dict[str, Any]]:
         """Convert tools to dictionaries and add server_url."""

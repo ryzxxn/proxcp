@@ -10,6 +10,8 @@ export default function AccessControlPage() {
   const { data: session } = useSession();
   const [keys, setKeys] = useState<any[]>([]);
   const [allTools, setAllTools] = useState<any[]>([]);
+  const [allResources, setAllResources] = useState<any[]>([]);
+  const [allPrompts, setAllPrompts] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
@@ -19,21 +21,28 @@ export default function AccessControlPage() {
   // Mapping State
   const [selectedKey, setSelectedKey] = useState<any | null>(null);
   const [keyTools, setKeyTools] = useState<any[]>([]);
+  const [keyResources, setKeyResources] = useState<any[]>([]);
+  const [keyPrompts, setKeyPrompts] = useState<any[]>([]);
   const [loadingMappings, setLoadingMappings] = useState(false);
+  const [activeSubTab, setActiveSubTab] = useState<'TOOLS' | 'RESOURCES' | 'PROMPTS'>('TOOLS');
   
   // Mapping Filters
-  const [toolSearch, setToolConfigSearch] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
   const [serverFilter, setServerFilter] = useState<string>('ALL');
 
   const fetchKeys = async () => {
     if (session?.user?.id) {
       try {
-        const [keysData, toolsData] = await Promise.all([
+        const [keysData, toolsData, resourcesData, promptsData] = await Promise.all([
           api.getApiKeys(session.user.id),
-          api.getTools(session.user.id)
+          api.getTools(session.user.id),
+          api.getResources(session.user.id),
+          api.getPrompts(session.user.id)
         ]);
         setKeys(keysData);
-        setAllTools(toolsData);
+        setAllTools(Array.isArray(toolsData) ? toolsData : (toolsData?.tools || []));
+        setAllResources(Array.isArray(resourcesData) ? resourcesData : (resourcesData?.resources || []));
+        setAllPrompts(Array.isArray(promptsData) ? promptsData : (promptsData?.prompts || []));
       } catch (error) {
         console.error('Failed to fetch data:', error);
       } finally {
@@ -50,8 +59,14 @@ export default function AccessControlPage() {
     if (!session?.user?.id) return;
     setLoadingMappings(true);
     try {
-      const data = await api.getApiKeyTools(session.user.id, toolConfigId);
-      setKeyTools(data);
+      const [tools, resources, prompts] = await Promise.all([
+        api.getApiKeyTools(session.user.id, toolConfigId),
+        api.getApiKeyResources(session.user.id, toolConfigId),
+        api.getApiKeyPrompts(session.user.id, toolConfigId)
+      ]);
+      setKeyTools(tools);
+      setKeyResources(resources);
+      setKeyPrompts(prompts);
     } catch (error) {
       console.error('Failed to fetch mappings:', error);
     } finally {
@@ -109,27 +124,82 @@ export default function AccessControlPage() {
     }
   };
 
-  const handleSyncAll = async () => {
+  const handleAddResource = async (resourceId: string) => {
     if (!session?.user?.id || !selectedKey) return;
     try {
-      await api.syncAllToolsToApiKey(session.user.id, selectedKey.tool_config_id);
+      await api.addResourceToApiKey(session.user.id, selectedKey.tool_config_id, resourceId);
       fetchMappings(selectedKey.tool_config_id);
-      toast.success('All tools synced to key');
+      toast.success('Resource attached');
     } catch (error) {
       toast.error('Error: ' + (error as any).message);
     }
   };
 
-  const handleAddFiltered = async (filteredTools: any[]) => {
-    if (!session?.user?.id || !selectedKey || filteredTools.length === 0) return;
+  const handleRemoveResource = async (mappingId: string) => {
+    if (!session?.user?.id || !selectedKey) return;
     try {
-      setLoadingMappings(true);
-      // Sequentially add each tool (backend could be optimized for bulk, but this is safer for now)
-      for (const tool of filteredTools) {
-        await api.addToolToApiKey(session.user.id, selectedKey.tool_config_id, tool.id);
+      await api.removeResourceFromApiKey(session.user.id, selectedKey.tool_config_id, mappingId);
+      fetchMappings(selectedKey.tool_config_id);
+      toast.success('Resource removed');
+    } catch (error) {
+      toast.error('Error: ' + (error as any).message);
+    }
+  };
+
+  const handleAddPrompt = async (promptId: string) => {
+    if (!session?.user?.id || !selectedKey) return;
+    try {
+      await api.addPromptToApiKey(session.user.id, selectedKey.tool_config_id, promptId);
+      fetchMappings(selectedKey.tool_config_id);
+      toast.success('Prompt attached');
+    } catch (error) {
+      toast.error('Error: ' + (error as any).message);
+    }
+  };
+
+  const handleRemovePrompt = async (mappingId: string) => {
+    if (!session?.user?.id || !selectedKey) return;
+    try {
+      await api.removePromptFromApiKey(session.user.id, selectedKey.tool_config_id, mappingId);
+      fetchMappings(selectedKey.tool_config_id);
+      toast.success('Prompt removed');
+    } catch (error) {
+      toast.error('Error: ' + (error as any).message);
+    }
+  };
+
+  const handleSyncAll = async () => {
+    if (!session?.user?.id || !selectedKey) return;
+    try {
+      if (activeSubTab === 'TOOLS') {
+        await api.syncAllToolsToApiKey(session.user.id, selectedKey.tool_config_id);
+      } else if (activeSubTab === 'RESOURCES') {
+        await api.syncAllResourcesToApiKey(session.user.id, selectedKey.tool_config_id);
+      } else if (activeSubTab === 'PROMPTS') {
+        await api.syncAllPromptsToApiKey(session.user.id, selectedKey.tool_config_id);
       }
       fetchMappings(selectedKey.tool_config_id);
-      toast.success(`Attached ${filteredTools.length} tools`);
+      toast.success(`All ${activeSubTab.toLowerCase()} synced to key`);
+    } catch (error) {
+      toast.error('Error: ' + (error as any).message);
+    }
+  };
+
+  const handleAddFiltered = async (filteredItems: any[]) => {
+    if (!session?.user?.id || !selectedKey || filteredItems.length === 0) return;
+    try {
+      setLoadingMappings(true);
+      for (const item of filteredItems) {
+        if (activeSubTab === 'TOOLS') {
+          await api.addToolToApiKey(session.user.id, selectedKey.tool_config_id, item.id);
+        } else if (activeSubTab === 'RESOURCES') {
+          await api.addResourceToApiKey(session.user.id, selectedKey.tool_config_id, item.id);
+        } else if (activeSubTab === 'PROMPTS') {
+          await api.addPromptToApiKey(session.user.id, selectedKey.tool_config_id, item.id);
+        }
+      }
+      fetchMappings(selectedKey.tool_config_id);
+      toast.success(`Attached ${filteredItems.length} items`);
     } catch (error) {
       toast.error('Batch add failed: ' + (error as any).message);
     } finally {
@@ -162,14 +232,34 @@ export default function AccessControlPage() {
     );
   }
 
-  // Get unique servers from allTools
-  const uniqueServers = Array.from(new Set(allTools.map(t => t.server_name || t.server_url || 'Unknown'))).sort();
+  // Get unique servers from all items
+  const allItems = [...allTools, ...allResources, ...allPrompts];
+  const uniqueServers = Array.from(new Set(allItems.map(t => t.server_name || t.server_url || 'Unknown'))).sort();
 
-  // Available tools logic
-  const availableTools = allTools
-    .filter(t => !keyTools.some(m => m.tool_id === t.id))
+  // Available items logic
+  let currentAll: any[] = [];
+  let currentKeyMappings: any[] = [];
+  let mappingIdField = '';
+  
+  if (activeSubTab === 'TOOLS') {
+    currentAll = allTools;
+    currentKeyMappings = keyTools;
+    mappingIdField = 'tool_id';
+  } else if (activeSubTab === 'RESOURCES') {
+    currentAll = allResources;
+    currentKeyMappings = keyResources;
+    mappingIdField = 'resource_id';
+  } else if (activeSubTab === 'PROMPTS') {
+    currentAll = allPrompts;
+    currentKeyMappings = keyPrompts;
+    mappingIdField = 'prompt_id';
+  }
+
+  const availableItems = currentAll
+    .filter(t => !currentKeyMappings.some(m => m[mappingIdField] === t.id))
     .filter(t => {
-      const matchesSearch = t.name.toLowerCase().includes(toolSearch.toLowerCase());
+      const name = t.name || t.uri || '';
+      const matchesSearch = name.toLowerCase().includes(searchQuery.toLowerCase());
       const serverName = t.server_name || t.server_url || 'Unknown';
       const matchesServer = serverFilter === 'ALL' || serverName === serverFilter;
       return matchesSearch && matchesServer;
@@ -288,13 +378,32 @@ export default function AccessControlPage() {
                 </div>
                 <div>
                   <h2 className="text-3xl font-bold tracking-tighter text-white">Permissions Matrix</h2>
-                  <p className="text-xs text-zinc-500 font-bold mt-1 uppercase tracking-widest italic">KEY_TARGET::{selectedKey.name}</p>
+                  <div className="flex items-center gap-6 mt-4">
+                    <button 
+                      onClick={() => setActiveSubTab('TOOLS')}
+                      className={`text-[10px] font-black uppercase tracking-[0.2em] transition-all px-4 py-2 rounded-lg border ${activeSubTab === 'TOOLS' ? 'bg-white text-black border-white' : 'text-zinc-600 border-zinc-900 hover:text-zinc-400'}`}
+                    >
+                      Tools ({keyTools.length})
+                    </button>
+                    <button 
+                      onClick={() => setActiveSubTab('RESOURCES')}
+                      className={`text-[10px] font-black uppercase tracking-[0.2em] transition-all px-4 py-2 rounded-lg border ${activeSubTab === 'RESOURCES' ? 'bg-white text-black border-white' : 'text-zinc-600 border-zinc-900 hover:text-zinc-400'}`}
+                    >
+                      Resources ({keyResources.length})
+                    </button>
+                    <button 
+                      onClick={() => setActiveSubTab('PROMPTS')}
+                      className={`text-[10px] font-black uppercase tracking-[0.2em] transition-all px-4 py-2 rounded-lg border ${activeSubTab === 'PROMPTS' ? 'bg-white text-black border-white' : 'text-zinc-600 border-zinc-900 hover:text-zinc-400'}`}
+                    >
+                      Prompts ({keyPrompts.length})
+                    </button>
+                  </div>
                 </div>
               </div>
               <button 
                 onClick={() => {
                   setSelectedKey(null);
-                  setToolConfigSearch('');
+                  setSearchQuery('');
                   setServerFilter('ALL');
                 }}
                 className="p-4 bg-zinc-900 text-zinc-500 hover:text-white rounded-full transition-all"
@@ -308,14 +417,14 @@ export default function AccessControlPage() {
               <div className="flex flex-col border-r border-zinc-900 p-10 space-y-8 min-h-0">
                 <div className="space-y-6 shrink-0">
                   <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-[0.2em]">Available Library</h3>
-                    {(toolSearch || serverFilter !== 'ALL') && availableTools.length > 0 && (
+                    <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-[0.2em]">Available {activeSubTab.toLowerCase()}</h3>
+                    {(searchQuery || serverFilter !== 'ALL') && availableItems.length > 0 && (
                       <button 
-                        onClick={() => handleAddFiltered(availableTools)}
+                        onClick={() => handleAddFiltered(availableItems)}
                         className="text-[10px] font-black text-white bg-zinc-900 px-3 py-1.5 rounded-lg hover:bg-zinc-800 transition-all uppercase tracking-widest flex items-center gap-2"
                       >
                         <Plus className="w-3 h-3" />
-                        Attach {availableTools.length} Result{availableTools.length !== 1 ? 's' : ''}
+                        Attach {availableItems.length} Result{availableItems.length !== 1 ? 's' : ''}
                       </button>
                     )}
                   </div>
@@ -325,9 +434,9 @@ export default function AccessControlPage() {
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-700" />
                       <input 
                         type="text" 
-                        placeholder="Search tools..." 
-                        value={toolSearch}
-                        onChange={e => setToolConfigSearch(e.target.value)}
+                        placeholder={`Search ${activeSubTab.toLowerCase()}...`} 
+                        value={searchQuery}
+                        onChange={e => setSearchQuery(e.target.value)}
                         className="w-full bg-black border border-zinc-900 rounded-xl pl-10 pr-4 py-3 text-xs font-medium text-white outline-none focus:border-zinc-500 transition-all placeholder:text-zinc-800"
                       />
                     </div>
@@ -346,22 +455,26 @@ export default function AccessControlPage() {
                 </div>
 
                 <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
-                  {availableTools.length > 0 ? (
-                    availableTools.map((tool) => (
-                      <div key={tool.id} className="flex items-center justify-between p-5 bg-zinc-900/20 border border-zinc-900 rounded-3xl group hover:border-zinc-600 transition-all shrink-0">
+                  {availableItems.length > 0 ? (
+                    availableItems.map((item) => (
+                      <div key={item.id} className="flex items-center justify-between p-5 bg-zinc-900/20 border border-zinc-900 rounded-3xl group hover:border-zinc-600 transition-all shrink-0">
                         <div className="flex items-center gap-5">
                           <div className="w-10 h-10 rounded-2xl bg-zinc-900 flex items-center justify-center text-zinc-700 group-hover:text-zinc-400 transition-all">
-                            <Box className="w-5 h-5" />
+                            {activeSubTab === 'TOOLS' ? <Box className="w-5 h-5" /> : activeSubTab === 'RESOURCES' ? <Activity className="w-5 h-5" /> : <Search className="w-5 h-5" />}
                           </div>
                           <div>
-                            <div className="text-sm font-bold text-zinc-400 group-hover:text-white transition-colors">{tool.name}</div>
-                            <div className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest mt-1 italic">{tool.server_name || tool.server_url}</div>
+                            <div className="text-sm font-bold text-zinc-400 group-hover:text-white transition-colors">{item.name || item.uri}</div>
+                            <div className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest mt-1 italic">{item.server_name || item.server_url}</div>
                           </div>
                         </div>
                         <button 
-                          onClick={() => handleAddTool(tool.id)}
+                          onClick={() => {
+                            if (activeSubTab === 'TOOLS') handleAddTool(item.id);
+                            else if (activeSubTab === 'RESOURCES') handleAddResource(item.id);
+                            else if (activeSubTab === 'PROMPTS') handleAddPrompt(item.id);
+                          }}
                           className="p-3 bg-zinc-900 text-zinc-600 hover:text-white rounded-2xl transition-all"
-                          title="Attach Tool"
+                          title={`Attach ${activeSubTab.toLowerCase()}`}
                         >
                           <Plus className="w-5 h-5" />
                         </button>
@@ -369,16 +482,16 @@ export default function AccessControlPage() {
                     ))
                   ) : (
                     <div className="h-full flex items-center justify-center text-center text-zinc-800 text-[10px] font-bold uppercase border-2 border-dashed border-zinc-900 rounded-[32px] p-12 tracking-[0.4em]">
-                      {allTools.length === keyTools.length ? 'Library Fully Linked' : 'No matches found'}
+                      {currentAll.length === currentKeyMappings.length ? 'Library Fully Linked' : 'No matches found'}
                     </div>
                   )}
                 </div>
               </div>
 
-              {/* Attached Tools (Right) */}
+              {/* Attached (Right) */}
               <div className="flex flex-col p-10 space-y-8 min-h-0 bg-zinc-950">
                 <div className="flex items-center justify-between shrink-0">
-                  <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-[0.2em]">Attached Access</h3>
+                  <h3 className="text-xs font-bold text-zinc-500 uppercase tracking-[0.2em]">Attached {activeSubTab.toLowerCase()}</h3>
                   <button 
                     onClick={handleSyncAll}
                     className="text-[10px] font-black text-zinc-500 flex items-center gap-3 hover:text-white transition-colors uppercase tracking-widest"
@@ -393,20 +506,26 @@ export default function AccessControlPage() {
                     <div className="flex justify-center p-12">
                       <Loader2 className="w-10 h-10 animate-spin text-zinc-800" />
                     </div>
-                  ) : keyTools.length > 0 ? (
-                    keyTools.map((mapping) => (
+                  ) : currentKeyMappings.length > 0 ? (
+                    currentKeyMappings.map((mapping) => (
                       <div key={mapping.id} className="flex items-center justify-between p-5 bg-black border border-zinc-900 rounded-3xl group hover:border-zinc-700 transition-all shrink-0">
                         <div className="flex items-center gap-5">
                           <div className="w-2 h-2 rounded-full bg-white opacity-20 group-hover:opacity-100 transition-all shadow-glow"></div>
                           <div>
-                            <div className="text-sm font-bold uppercase tracking-tight text-zinc-200">{mapping.tool_name}</div>
+                            <div className="text-sm font-bold uppercase tracking-tight text-zinc-200">
+                                {activeSubTab === 'TOOLS' ? mapping.tool_name : activeSubTab === 'RESOURCES' ? mapping.resource_name : mapping.prompt_name}
+                            </div>
                             <div className="text-[10px] text-zinc-600 font-bold mt-1 italic uppercase tracking-widest">{mapping.server_name}</div>
                           </div>
                         </div>
                         <button 
-                          onClick={() => handleRemoveTool(mapping.id)}
+                          onClick={() => {
+                            if (activeSubTab === 'TOOLS') handleRemoveTool(mapping.id);
+                            else if (activeSubTab === 'RESOURCES') handleRemoveResource(mapping.id);
+                            else if (activeSubTab === 'PROMPTS') handleRemovePrompt(mapping.id);
+                          }}
                           className="p-3 bg-zinc-900 text-zinc-700 hover:text-red-500 rounded-2xl transition-all"
-                          title="Remove Tool"
+                          title={`Remove ${activeSubTab.toLowerCase()}`}
                         >
                           <Minus className="w-5 h-5" />
                         </button>
@@ -423,7 +542,7 @@ export default function AccessControlPage() {
             
             <div className="p-10 border-t border-zinc-900 flex justify-between items-center shrink-0">
                <div className="text-[10px] font-bold text-zinc-700 uppercase tracking-widest italic">
-                  Link count: {keyTools.length} total modules attached
+                  Link count: {keyTools.length + keyResources.length + keyPrompts.length} total capabilities attached
                </div>
                <button 
                 onClick={() => setSelectedKey(null)}

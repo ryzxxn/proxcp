@@ -49,12 +49,14 @@ export default function Dashboard() {
     if (session?.user?.id) {
       const fetchData = async () => {
         try {
-          const [servers, tools, apiKeys, txGroup] = await Promise.all([
+          const [servers, toolsData, apiKeys, txGroup] = await Promise.all([
             api.getServers(session.user.id),
             api.getTools(session.user.id),
             api.getApiKeys(session.user.id),
             api.getTransactions(session.user.id)
           ]);
+
+          const tools = Array.isArray(toolsData) ? toolsData : (toolsData?.tools || []);
 
           // Flatten and sort transactions by timestamp DESC
           const allTx = Object.values(txGroup)

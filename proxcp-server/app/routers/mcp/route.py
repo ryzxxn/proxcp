@@ -413,9 +413,9 @@ async def handle_request(
                 if not r.get("is_template"):
                     static_resources.append({
                         "uri": r["uri"],
-                        "name": r["name"],
-                        "description": r["description"],
-                        "mimeType": r["mimeType"]
+                        "name": r.get("name") or r["uri"].split("/")[-1],
+                        "description": r.get("description") or "",
+                        "mimeType": r.get("mimeType") or "text/plain"
                     })
                     if resource_map is not None:
                         resource_map[r["uri"]] = {"url": r["server_url"]}
@@ -439,9 +439,9 @@ async def handle_request(
                 if r.get("is_template"):
                     templates.append({
                         "uriTemplate": r["uri"],
-                        "name": r["name"],
-                        "description": r["description"],
-                        "mimeType": r["mimeType"]
+                        "name": r.get("name") or r["uri"].split("/")[-1],
+                        "description": r.get("description") or "",
+                        "mimeType": r.get("mimeType") or "text/plain"
                     })
                     if resource_map is not None:
                         resource_map[r["uri"]] = {"url": r["server_url"]}
@@ -532,6 +532,8 @@ async def handle_request(
             from app.utils.cache import tool_cache
             cached_prompts = tool_cache.get_prompts(username, tool_config_id)
             
+            logger.debug(f"[{session_id or 'stateless'}] Found {len(cached_prompts)} prompts in cache for {username}")
+            
             prompts_list = []
             if session_id and session_id in sessions:
                 prompt_map = sessions[session_id].get("prompt_map", {})
@@ -540,11 +542,22 @@ async def handle_request(
                 prompt_map = None
 
             for p in cached_prompts:
-                prompts_list.append({
+                # Build prompt dict, omitting None values for better client compatibility
+                prompt_entry = {
                     "name": p["name"],
-                    "description": p["description"],
-                    "arguments": p["arguments"]
-                })
+                    "description": p.get("description") or "",
+                }
+                
+                if p.get("arguments"):
+                    prompt_entry["arguments"] = [
+                        {k: v for k, v in arg.items() if v is not None}
+                        for arg in p["arguments"]
+                    ]
+                else:
+                    prompt_entry["arguments"] = []
+                    
+                prompts_list.append(prompt_entry)
+                
                 if prompt_map is not None:
                     prompt_map[p["name"]] = {"url": p["server_url"]}
             
@@ -564,13 +577,29 @@ async def handle_request(
                     target = sessions[session_id].get("prompt_map", {}).get(name)
                 
                 if not target:
-                    # Fallback scan DB
-                    from app.utils.database import Prompt, UserServerConfig
-                    query = (
-                        select(Prompt, UserServerConfig.token)
-                        .join(UserServerConfig, (Prompt.server_url == UserServerConfig.url) & (Prompt.user_id == UserServerConfig.user_id))
-                        .where(Prompt.user_id == username, Prompt.name == name, Prompt.is_active == True)
-                    )
+                    # Fallback scan DB with permission check
+                    from app.utils.database import Prompt, UserServerConfig, PromptConfigMapping
+                    
+                    if tool_config_id:
+                        # Only allow if mapped to this config
+                        query = (
+                            select(Prompt, UserServerConfig.token)
+                            .join(UserServerConfig, (Prompt.server_url == UserServerConfig.url) & (Prompt.user_id == UserServerConfig.user_id))
+                            .join(PromptConfigMapping, Prompt.id == PromptConfigMapping.prompt_id)
+                            .where(
+                                Prompt.user_id == username, 
+                                Prompt.name == name, 
+                                Prompt.is_active == True,
+                                PromptConfigMapping.tool_config_id == tool_config_id
+                            )
+                        )
+                    else:
+                        query = (
+                            select(Prompt, UserServerConfig.token)
+                            .join(UserServerConfig, (Prompt.server_url == UserServerConfig.url) & (Prompt.user_id == UserServerConfig.user_id))
+                            .where(Prompt.user_id == username, Prompt.name == name, Prompt.is_active == True)
+                        )
+                    
                     p_row = db.execute(query).first()
                     if p_row:
                         target = {"url": p_row[0].server_url, "token": p_row[1]}

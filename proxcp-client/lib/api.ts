@@ -77,6 +77,30 @@ export const api = {
   syncAllToolsToApiKey: (userId: string, toolConfigId: string) =>
     apiClient.post(`/api_key/${toolConfigId}/sync`, {}, { params: { user_id: userId } }).then(res => res.data),
 
+  getApiKeyResources: (userId: string, toolConfigId: string) =>
+    apiClient.get(`/api_key/${toolConfigId}/resources`, { params: { user_id: userId } }).then(res => res.data),
+
+  addResourceToApiKey: (userId: string, toolConfigId: string, resourceId: string) =>
+    apiClient.post(`/api_key/${toolConfigId}/resources`, { resource_id: resourceId }, { params: { user_id: userId } }).then(res => res.data),
+
+  removeResourceFromApiKey: (userId: string, toolConfigId: string, mappingId: string) =>
+    apiClient.delete(`/api_key/${toolConfigId}/resources/${mappingId}`, { params: { user_id: userId } }).then(res => res.data),
+
+  syncAllResourcesToApiKey: (userId: string, toolConfigId: string) =>
+    apiClient.post(`/api_key/${toolConfigId}/resources/sync`, {}, { params: { user_id: userId } }).then(res => res.data),
+
+  getApiKeyPrompts: (userId: string, toolConfigId: string) =>
+    apiClient.get(`/api_key/${toolConfigId}/prompts`, { params: { user_id: userId } }).then(res => res.data),
+
+  addPromptToApiKey: (userId: string, toolConfigId: string, promptId: string) =>
+    apiClient.post(`/api_key/${toolConfigId}/prompts`, { prompt_id: promptId }, { params: { user_id: userId } }).then(res => res.data),
+
+  removePromptFromApiKey: (userId: string, toolConfigId: string, mappingId: string) =>
+    apiClient.delete(`/api_key/${toolConfigId}/prompts/${mappingId}`, { params: { user_id: userId } }).then(res => res.data),
+
+  syncAllPromptsToApiKey: (userId: string, toolConfigId: string) =>
+    apiClient.post(`/api_key/${toolConfigId}/prompts/sync`, {}, { params: { user_id: userId } }).then(res => res.data),
+
   toggleApiKey: (userId: string, keyId: string, active: boolean) =>
     apiClient.post(`/api_key/${keyId}/activate`, { active }, { params: { user_id: userId } }).then(res => res.data),
 

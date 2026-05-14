@@ -70,7 +70,9 @@ export default function ServersPage() {
       if (errors.length > 0) {
         toast.error(`Sync completed with errors for ${errors.length} nodes: ${errors.join(', ')}`);
       } else {
-        toast.success(`Sync successful. Discovered ${urls.reduce((acc, url) => acc + (results[url].tools?.length || 0), 0)} tools across ${urls.length} nodes.`);
+        const counts = response.totals || { tools: 0, prompts: 0, resources: 0 };
+        
+        toast.success(`Sync successful. Discovered ${counts.tools} tools, ${counts.prompts} prompts, and ${counts.resources} resources across ${urls.length} nodes.`);
       }
     } catch (error) {
       toast.error('Sync failed: ' + (error as any).message);

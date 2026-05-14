@@ -4,7 +4,10 @@ import json
 from typing import Dict, List, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import select
-from app.utils.database import Tool, ToolConfigMapping, UserServerConfig, Resource, Prompt, get_db_context
+from app.utils.database import (
+    Tool, ToolConfigMapping, UserServerConfig, Resource, Prompt, 
+    ResourceConfigMapping, PromptConfigMapping, get_db_context
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +25,14 @@ class ToolCache:
 
     def get_resources(self, user_id: str, tool_config_id: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
         self._maybe_refresh(user_id, force_refresh)
-        # Resources aren't currently mapped to tool_config_ids in the same way, 
-        # but we'll apply the same filtering if we implement it later.
-        return self._resources_cache.get(user_id, [])
+        return self._filter_items(self._resources_cache.get(user_id, []), tool_config_id)
 
     def get_prompts(self, user_id: str, tool_config_id: Optional[str] = None, force_refresh: bool = False) -> List[Dict[str, Any]]:
         self._maybe_refresh(user_id, force_refresh)
-        return self._prompts_cache.get(user_id, [])
+        prompts = self._prompts_cache.get(user_id, [])
+        filtered_prompts = self._filter_items(prompts, tool_config_id)
+        logger.debug(f"Cache: Found {len(filtered_prompts)} prompts for user {user_id} (config: {tool_config_id})")
+        return filtered_prompts
 
     def _maybe_refresh(self, user_id: str, force_refresh: bool):
         now = time.time()
@@ -74,8 +78,11 @@ class ToolCache:
                 .where(Resource.user_id == user_id, Resource.is_active == True)
             )
             res_results = db.execute(res_query).all()
-            self._resources_cache[user_id] = [
-                {
+            
+            res_list = []
+            for r, sname in res_results:
+                res_dict = {
+                    "id": str(r.id),
                     "uri": r.uri,
                     "name": r.name,
                     "description": r.description,
@@ -83,8 +90,11 @@ class ToolCache:
                     "server_url": r.server_url,
                     "server_name": sname,
                     "is_template": r.is_template
-                } for r, sname in res_results
-            ]
+                }
+                mappings = db.query(ResourceConfigMapping).filter(ResourceConfigMapping.resource_id == r.id).all()
+                res_dict["mapped_config_ids"] = [m.tool_config_id for m in mappings]
+                res_list.append(res_dict)
+            self._resources_cache[user_id] = res_list
 
             # 3. Sync Prompts
             p_query = (
@@ -93,15 +103,21 @@ class ToolCache:
                 .where(Prompt.user_id == user_id, Prompt.is_active == True)
             )
             p_results = db.execute(p_query).all()
-            self._prompts_cache[user_id] = [
-                {
+            
+            p_list = []
+            for p, sname in p_results:
+                p_dict = {
+                    "id": str(p.id),
                     "name": p.name,
                     "description": p.description,
                     "arguments": json.loads(p.arguments) if p.arguments else [],
                     "server_url": p.server_url,
                     "server_name": sname
-                } for p, sname in p_results
-            ]
+                }
+                mappings = db.query(PromptConfigMapping).filter(PromptConfigMapping.prompt_id == p.id).all()
+                p_dict["mapped_config_ids"] = [m.tool_config_id for m in mappings]
+                p_list.append(p_dict)
+            self._prompts_cache[user_id] = p_list
 
     def _filter_items(self, items: List[Dict[str, Any]], tool_config_id: Optional[str]) -> List[Dict[str, Any]]:
         if not tool_config_id:

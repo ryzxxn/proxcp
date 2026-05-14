@@ -160,6 +160,26 @@ class ToolConfigMapping(Base):
     tool_config_id = Column(String, index=True, nullable=False)
     tool_id = Column(UUID(as_uuid=True), index=True, nullable=False)
 
+class ResourceConfigMapping(Base):
+    """
+    Model for mapping a resource to a tool_config_id.
+    """
+    __tablename__ = "resource_config_mappings"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tool_config_id = Column(String, index=True, nullable=False)
+    resource_id = Column(UUID(as_uuid=True), index=True, nullable=False)
+
+class PromptConfigMapping(Base):
+    """
+    Model for mapping a prompt to a tool_config_id.
+    """
+    __tablename__ = "prompt_config_mappings"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tool_config_id = Column(String, index=True, nullable=False)
+    prompt_id = Column(UUID(as_uuid=True), index=True, nullable=False)
+
 # --- DB Utility Functions ---
 
 def check_database_connection():
